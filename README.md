@@ -4,13 +4,13 @@ Viviette is a compact Windows-first music player built with Tauri 2, Rust, TypeS
 
 ## Install
 
-After the first tagged Windows release is published, download and launch the latest user-level installer from PowerShell with:
+Download and launch the latest Windows installer from PowerShell with:
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'; $base = 'https://github.com/tsukumivi/Viviette/releases/latest/download'; $installer = Join-Path $env:TEMP 'Viviette-Setup.exe'; $sums = Join-Path $env:TEMP 'Viviette-SHA256SUMS.txt'; Invoke-WebRequest "$base/Viviette-Setup.exe" -OutFile $installer; Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile $sums; $expected = (Get-Content $sums).Split(' ')[0]; if ((Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant() -ne $expected) { throw 'Viviette installer checksum validation failed.' }; Start-Process -FilePath $installer
 ```
 
-The NSIS installer is configured for the current Windows user and does not ask for administrator access. It also publishes a SHA-256 checksum file. The GitHub repository currently has no published source commits or releases, so this download link will work after the initial source push and a `v*` tag starts the release workflow.
+The NSIS installer is configured for the current Windows user and does not ask for administrator access. The release also includes a SHA-256 checksum file. You can also download `Viviette-Setup.exe` from the [GitHub Releases page](https://github.com/tsukumivi/Viviette/releases).
 
 ## Working in this checkout
 
