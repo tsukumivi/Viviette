@@ -27,6 +27,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build the Windows setup package
         run: pnpm tauri build --bundles nsis
+        env:
+          VIVIETTE_YOUTUBE_CLIENT_ID: ${{ vars.VIVIETTE_YOUTUBE_CLIENT_ID }}
+          VIVIETTE_SPOTIFY_CLIENT_ID: ${{ vars.VIVIETTE_SPOTIFY_CLIENT_ID }}
       - name: Prepare the stable installer name and checksum
         shell: pwsh
         run: |
@@ -44,9 +47,9 @@ jobs:
           $notes = @'
           Windows desktop installer for Viviette. Installs for the current Windows user and does not require administrator access.
 
-          YouTube and SoundCloud catalog search is available after you configure your own API credentials in Settings → Integrations. OAuth sign-in opens on the provider's own website; Viviette never receives provider passwords. API credentials and OAuth tokens are stored in Windows Credential Manager. Spotify search and sign-in open on Spotify itself.
+          Provider sign-in opens on each provider's official website; Viviette never receives provider passwords. Search requires an authorized provider account. Google and Spotify sign-in require release app IDs to be configured by maintainers. This build has no SoundCloud token-exchange service, so SoundCloud sign-in is unavailable to new installs until that service is configured. Account tokens are stored in Windows Credential Manager.
 
-          YouTube playback uses its visible official player; SoundCloud uses its official widget; Spotify search results open in Spotify. These provider players are not yet connected to Viviette's bottom playback bar or Discord Rich Presence. The bottom player and pause-aware Discord timestamp work with imported local tracks.
+          YouTube playback uses its visible official player; SoundCloud uses its official widget when configured; Spotify search results open in Spotify. These provider players are not yet connected to Viviette's bottom playback bar or Discord Rich Presence. The bottom player and pause-aware Discord timestamp work with imported local tracks.
 
           Verify Viviette-Setup.exe with SHA256SUMS.txt.
           '@

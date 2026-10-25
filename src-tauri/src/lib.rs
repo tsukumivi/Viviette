@@ -4,7 +4,7 @@ mod discord_presence;
 mod providers;
 
 use discord_presence::{PresenceService, PresenceUpdate};
-use providers::{ProviderConfigInput, ProviderSearchResult, ProviderStatus};
+use providers::{ProviderSearchResult, ProviderStatus};
 use tauri::{Manager, State};
 
 #[tauri::command]
@@ -13,18 +13,16 @@ fn audio_output_monitor_supported() -> bool {
 }
 
 #[tauri::command]
-fn discord_presence_update(update: PresenceUpdate, presence: State<'_, PresenceService>) -> Result<(), String> {
+fn discord_presence_update(
+    update: PresenceUpdate,
+    presence: State<'_, PresenceService>,
+) -> Result<(), String> {
     presence.update(update)
 }
 
 #[tauri::command]
 fn discord_presence_clear(presence: State<'_, PresenceService>) -> Result<(), String> {
     presence.clear()
-}
-
-#[tauri::command]
-fn provider_save_config(config: ProviderConfigInput) -> Result<(), String> {
-    providers::save_config(config)
 }
 
 #[tauri::command]
@@ -45,10 +43,16 @@ fn provider_disconnect(provider: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn provider_search(provider: String, query: String, live_performances: bool) -> Result<Vec<ProviderSearchResult>, String> {
-    tauri::async_runtime::spawn_blocking(move || providers::search(&provider, &query, live_performances))
-        .await
-        .map_err(|error| format!("Search could not finish: {error}"))?
+async fn provider_search(
+    provider: String,
+    query: String,
+    live_performances: bool,
+) -> Result<Vec<ProviderSearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        providers::search(&provider, &query, live_performances)
+    })
+    .await
+    .map_err(|error| format!("Search could not finish: {error}"))?
 }
 
 #[tauri::command]
@@ -59,9 +63,20 @@ fn open_provider_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            use tauri_plugin_deep_link::DeepLinkExt;
+
             app.manage(PresenceService::new(app.handle().clone()));
+            app.deep_link().on_open_url(|event| {
+                for url in event.urls() {
+                    providers::receive_deep_link(url.clone());
+                }
+            });
+            #[cfg(all(debug_assertions, windows))]
+            app.deep_link().register_all()?;
             #[cfg(windows)]
             audio_output::start(app.handle().clone());
             Ok(())
@@ -70,7 +85,6 @@ pub fn run() {
             audio_output_monitor_supported,
             discord_presence_update,
             discord_presence_clear,
-            provider_save_config,
             provider_status,
             provider_connect,
             provider_disconnect,

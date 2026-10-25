@@ -1,6 +1,7 @@
 import "./styles.css";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { pauseActivePlayback, registerPlaybackAdapter } from "./playback/adapter";
 import { getTrackAudio, listTracks, saveTrack, type LibraryTrack } from "./library/storage";
 
@@ -28,7 +29,6 @@ type ProviderResult = {
   explicit: boolean | null;
 };
 type ProviderStatus = { provider: Provider; configured: boolean; connectable: boolean; connected: boolean; detail: string };
-const OAUTH_CALLBACK_URI = "http://127.0.0.1:47619/callback";
 
 let tracks: Track[] = [];
 
@@ -108,7 +108,7 @@ const readPlaylists = (): Playlist[] => {
 };
 
 let currentView: Page = "home";
-let settingsSection: "integrations" | "playback" = "integrations";
+let settingsSection: "integrations" | "playback" | "accessibility" = "integrations";
 const savedSource = readString(sourceStorageKey);
 let selectedSource: Provider = savedSource === "soundcloud" || savedSource === "spotify" ? savedSource : "youtube";
 let livePerformances = readBoolean(liveSearchStorageKey, savedSource === "live");
@@ -135,6 +135,17 @@ let repeatMode: "off" | "all" | "one" = "off";
 let shuffleEnabled = false;
 let currentQueue: string[] = [];
 let currentObjectUrl: string | null = null;
+const accessibilityZoomKey = "viviette.accessibility.zoom.v1";
+const accessibilityFontKey = "viviette.accessibility.fontScale.v1";
+const readPercent = (key: string, fallback: number, min: number, max: number): number => {
+  const stored = readString(key);
+  if (!stored) return fallback;
+  const parsed = Number(stored);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+};
+let accessibilityZoom = readPercent(accessibilityZoomKey, 100, 75, 125);
+let accessibilityFontScale = readPercent(accessibilityFontKey, 100, 80, 150);
+let pendingLiveFilter = false;
 
 const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -204,7 +215,63 @@ const importButton = (label = "Add music"): string => `<button class="button-pri
 
 const providerLabel = (provider: Provider): string => provider === "youtube" ? "YouTube" : provider === "soundcloud" ? "SoundCloud" : "Spotify";
 const providerIcon = (provider: Provider): string => provider === "youtube" ? "riff-youtube" : provider === "soundcloud" ? "riff-soundcloud" : "riff-spotify";
-const providerStatus = (provider: Provider): ProviderStatus => providerStatuses[provider] ?? { provider, configured: false, connectable: false, connected: false, detail: isTauri() ? "Checking provider setup…" : "Provider integrations are available in the desktop app." };
+const providerStatus = (provider: Provider): ProviderStatus => providerStatuses[provider] ?? { provider, configured: false, connectable: false, connected: false, detail: isTauri() ? "Checking account sign-in…" : "Provider account connections are available in the desktop app." };
+
+const updateSourceControls = (): void => {
+  document.querySelectorAll<HTMLButtonElement>(".source-option[data-source]").forEach((button) => {
+    const source = button.dataset.source;
+    const isSelected = source === "live" ? livePerformances : source === selectedSource;
+    button.classList.toggle("is-selected", isSelected);
+    button.setAttribute("aria-pressed", String(isSelected));
+    if (source === "live") {
+      button.classList.remove("is-connected");
+      button.title = `Search concert recordings on ${providerLabel(selectedSource)}`;
+      button.setAttribute("aria-label", `Live Performances search using ${providerLabel(selectedSource)}`);
+      return;
+    }
+    if (source !== "youtube" && source !== "soundcloud" && source !== "spotify") return;
+    const status = providerStatus(source);
+    button.classList.toggle("is-connected", status.connected);
+    button.title = status.connected ? `${providerLabel(source)} connected` : `Sign in to ${providerLabel(source)}`;
+    button.setAttribute("aria-label", status.connected ? `${providerLabel(source)}, connected` : `${providerLabel(source)}, sign in required`);
+  });
+};
+
+const applyAccessibilitySettings = async (reportError = false): Promise<void> => {
+  document.documentElement.style.setProperty("--accessibility-font-scale", String(accessibilityFontScale / 100));
+  const zoom = accessibilityZoom / 100;
+  if (!isTauri()) {
+    document.documentElement.style.zoom = String(zoom);
+    return;
+  }
+  try {
+    document.documentElement.style.zoom = "";
+    await getCurrentWebview().setZoom(zoom);
+  } catch {
+    document.documentElement.style.zoom = String(zoom);
+    if (reportError) announce("Window zoom could not be applied. The interface font size is still updated.");
+  }
+};
+
+const persistAccessibility = (): void => {
+  try {
+    localStorage.setItem(accessibilityZoomKey, String(accessibilityZoom));
+    localStorage.setItem(accessibilityFontKey, String(accessibilityFontScale));
+  } catch {
+    announce("Accessibility choices could not be saved.");
+  }
+};
+
+const refreshAccessibilityValues = (): void => {
+  const zoomInput = document.querySelector<HTMLInputElement>("#accessibilityZoom");
+  const fontInput = document.querySelector<HTMLInputElement>("#accessibilityFontScale");
+  const zoomValue = document.querySelector<HTMLOutputElement>("#accessibilityZoomValue");
+  const fontValue = document.querySelector<HTMLOutputElement>("#accessibilityFontValue");
+  if (zoomInput) zoomInput.value = String(accessibilityZoom);
+  if (fontInput) fontInput.value = String(accessibilityFontScale);
+  if (zoomValue) zoomValue.value = `${accessibilityZoom}%`;
+  if (fontValue) fontValue.value = `${accessibilityFontScale}%`;
+};
 
 const activeProviderEmbed = (): string => {
   if (!activeProviderResult || activeProviderResult.provider !== selectedSource) return "";
@@ -234,14 +301,16 @@ const providerSearchMarkup = (): string => {
   }).join("");
   const connection = providerStatus(selectedSource);
   let contents = "";
-  if (selectedSource === "spotify") {
+  if (!connection.connected) {
+    const action = `<button type="button" data-provider-login="${selectedSource}">${connection.connectable ? `Log in to ${label}` : "Account options"}</button>`;
+    contents = `<div class="search-prompt"><div><strong>Sign in to ${label} to search</strong><p>${escapeHtml(connection.detail)} Your password stays with ${selectedSource === "youtube" ? "Google" : label}.</p></div>${action}</div>`;
+  } else if (selectedSource === "spotify") {
     const externalQuery = livePerformances ? `${query} live concert performance` : query;
-    contents = `<div class="search-prompt"><div><strong>Search on Spotify</strong><p>Spotify opens its own catalog and sign-in. Its results stay on Spotify.</p></div><button type="button" data-provider-search-external>Search Spotify for “${escapeHtml(externalQuery)}”</button></div>`;
+    contents = `<div class="search-prompt"><div><strong>Search on Spotify</strong><p>Your Spotify account is connected. Search and playback stay on Spotify.</p></div><button type="button" data-provider-search-external>Search Spotify for “${escapeHtml(externalQuery)}”</button></div>`;
   } else if (providerSearchPending) {
     contents = emptyState("Searching…", `Looking for “${query}” on ${label}${filterNote}.`);
   } else if (providerSearchError) {
-    const setupAction = selectedSource === "youtube" ? "Add YouTube API credentials" : "Set up SoundCloud";
-    contents = `<div class="search-prompt"><div><strong>${escapeHtml(providerSearchError)}</strong><p>${escapeHtml(connection.detail)}</p></div><button type="button" data-provider-settings="${selectedSource}">${setupAction}</button></div>`;
+    contents = `<div class="search-prompt"><div><strong>${escapeHtml(providerSearchError)}</strong><p>${escapeHtml(connection.detail)}</p></div><button type="button" data-provider-login="${selectedSource}">Account options</button></div>`;
   } else if (!providerResults.length) {
     contents = emptyState("No matches", `No ${label} results found for “${query}”.`);
   } else {
@@ -287,84 +356,77 @@ const playlistsMarkup = (): string => {
   return `<div class="page">${pageHeading("YOUR LIBRARY", "Playlists", `${playlists.length} playlists`)}<section class="content-section"><div class="section-header"><h2>Your playlists</h2><button class="text-button" type="button" id="pageCreatePlaylist">+ Create playlist</button></div><div class="mix-grid">${list || emptyState("No playlists yet", "Create one, then add tracks from the compact player bar.")}</div></section></div>`;
 };
 
-const providerIntegrationCard = (provider: Provider): string => {
+const providerConnectionRow = (provider: Provider): string => {
   const label = providerLabel(provider);
   const status = providerStatus(provider);
-  if (provider === "spotify") {
-    return `<article class="setting-card provider-settings-card" id="provider-card-spotify"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-spotify"/></svg><span class="setting-copy"><strong>Spotify</strong><span>${escapeHtml(status.detail)}</span></span><span class="setting-state">${status.connected ? "Connected" : status.configured ? "Ready to connect" : "Needs setup"}</span><div class="provider-form"><label class="full">Spotify app Client ID<input type="text" autocomplete="off" data-provider-field="clientId" placeholder="From the Spotify Developer Dashboard"></label><p class="provider-disclosure full">Create a Spotify app and add this OAuth redirect URI in its settings: <code>${OAUTH_CALLBACK_URI}</code>. Sign-in opens in your default browser and returns here. Viviette stores the authorization token in the operating-system credential store and never receives your Spotify password or client secret. Spotify catalog search and playback stay on Spotify.</p><div class="provider-settings-actions"><button type="button" data-provider-save="spotify">Save setup</button><button class="primary" type="button" data-provider-connect="spotify" ${status.connectable && !status.connected ? "" : "disabled"}>${status.connected ? "Connected" : "Connect Spotify"}</button><button type="button" data-provider-signup="spotify">Create Spotify account</button><button type="button" data-provider-console="spotify">Developer setup</button>${status.connected ? `<button type="button" data-provider-disconnect="spotify">Disconnect</button>` : ""}</div></div></article>`;
-  }
-  const configuredLabel = status.connected ? "Connected" : status.configured ? "Ready to connect" : "Needs setup";
-  const fields = provider === "youtube"
-    ? `<label class="full">YouTube Data API key<input type="password" autocomplete="off" data-provider-field="apiKey" placeholder="AIza…"></label><label>Google OAuth Client ID<input type="text" autocomplete="off" data-provider-field="clientId" placeholder="Optional for public search"></label><label>Google OAuth Client Secret<input type="password" autocomplete="new-password" data-provider-field="clientSecret" placeholder="Only needed for account sign-in"></label>`
-    : provider === "soundcloud"
-      ? `<label>SoundCloud Client ID<input type="text" autocomplete="off" data-provider-field="clientId" placeholder="From your SoundCloud API app"></label><label>SoundCloud Client Secret<input type="password" autocomplete="new-password" data-provider-field="clientSecret" placeholder="Stored in Windows Credential Manager"></label>`
-      : "";
-  const details = provider === "youtube"
-      ? "Search uses the YouTube Data API with an API key or Google authorization. Videos open in YouTube’s visible player with its standard controls and ads."
-    : provider === "soundcloud"
-      ? "Public search uses SoundCloud’s API and official player widget. API app registration currently requires Artist Pro; only tracks SoundCloud marks playable are returned."
-      : "";
-  return `<article class="setting-card provider-settings-card" id="provider-card-${provider}"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${providerIcon(provider)}"/></svg><span class="setting-copy"><strong>${label}</strong><span>${escapeHtml(status.detail)}</span></span><span class="setting-state">${configuredLabel}</span><div class="provider-form">${fields}<p class="provider-disclosure full">${details}<br>Viviette never asks for provider passwords. OAuth opens in your browser. App keys and tokens are saved in the operating system credential store. OAuth callback: <code>${OAUTH_CALLBACK_URI}</code></p><div class="provider-settings-actions"><button class="primary" type="button" data-provider-save="${provider}">Save setup</button><button type="button" data-provider-connect="${provider}" ${status.connectable && !status.connected ? "" : "disabled"}>Connect account</button><button type="button" data-provider-signup="${provider}">Create account</button><button type="button" data-provider-console="${provider}">Developer setup</button>${status.connected ? `<button type="button" data-provider-disconnect="${provider}">Disconnect</button>` : ""}<span class="setting-state" data-provider-state="${provider}">${escapeHtml(status.detail)}</span></div></div></article>`;
+  const state = status.connected ? "Connected" : status.connectable ? "Ready to sign in" : "Sign-in unavailable";
+  const buttons = status.connected
+    ? `<button type="button" data-provider-disconnect="${provider}">Log out</button>`
+    : `<button class="primary" type="button" data-provider-connect="${provider}" ${status.connectable ? "" : "disabled"} title="${status.connectable ? `Log in to ${label}` : "Sign-in is not configured for this build yet"}>Log in</button><button type="button" data-provider-signup="${provider}">Sign up</button>`;
+  return `<article class="setting-card provider-account-row" id="provider-account-${provider}"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${providerIcon(provider)}"/></svg><span class="setting-copy"><strong>${label}</strong><span>${status.connected ? "Your account is connected." : status.connectable ? "Log in to search and listen through this provider." : "Account sign-in is not available in this build yet."}</span></span><span class="setting-state">${state}</span><div class="provider-account-actions">${buttons}</div></article>`;
 };
 
 const settingsMarkup = (): string => {
   const settingsRows = settingsSection === "playback" ? `
     <article class="setting-card audio-pause-setting"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-audio-output"/></svg><span class="setting-copy"><strong>Pause on audio output change</strong><span>Pauses connected playback when Windows changes or loses the default output, including a Bluetooth headset disconnect.</span></span><span class="setting-state" id="audioOutputState">${audioOutputMonitorSupported ? (pauseOnOutputDisconnect ? "On" : "Off") : "Desktop only"}</span><label class="setting-switch" title="Pause playback when the default audio output disconnects"><input id="pauseOnOutputDisconnect" type="checkbox" aria-label="Pause playback when audio output disconnects" ${pauseOnOutputDisconnect ? "checked" : ""} ${audioOutputMonitorSupported ? "" : "disabled"}><span aria-hidden="true"></span></label></article>` : `
-    <p class="provider-note">YouTube, SoundCloud, and Spotify sign-in use provider authorization in your browser. Catalog search and playback stay with each provider. Live Performances is a search filter, not a separate service.</p>
-    ${providerIntegrationCard("youtube")}
-    ${providerIntegrationCard("soundcloud")}
-    ${providerIntegrationCard("spotify")}
+    ${settingsSection === "accessibility" ? `
+    <article class="setting-card accessibility-setting"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-interface"/></svg><span class="setting-copy"><strong>Zoom level</strong><span>Scale the whole Viviette interface.</span></span><div class="accessibility-control"><input id="accessibilityZoom" type="range" min="75" max="125" step="5" value="${accessibilityZoom}" aria-label="Interface zoom level"><output class="accessibility-control-value" id="accessibilityZoomValue" for="accessibilityZoom">${accessibilityZoom}%</output></div></article>
+    <article class="setting-card accessibility-setting"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-interface"/></svg><span class="setting-copy"><strong>Font size</strong><span>Adjust text size while keeping the interface zoom unchanged.</span></span><div class="accessibility-control"><input id="accessibilityFontScale" type="range" min="80" max="150" step="10" value="${accessibilityFontScale}" aria-label="Font size"><output class="accessibility-control-value" id="accessibilityFontValue" for="accessibilityFontScale">${accessibilityFontScale}%</output></div></article>
+    <div class="accessibility-reset-row"><button class="accessibility-reset" type="button" data-accessibility-reset>Reset to defaults</button></div>` : `
+    <p class="provider-note">Log in or create an account with each service to search its catalog. Sign-in opens on the provider’s official page; Viviette never asks for your password. Live Performances is a filter for concert recordings.</p>
+    ${providerConnectionRow("youtube")}
+    ${providerConnectionRow("soundcloud")}
+    ${providerConnectionRow("spotify")}
     <article class="setting-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-live"/></svg><span class="setting-copy"><strong>Live performances</strong><span>Adds concert-recording terms to searches on the currently selected provider.</span></span><span class="setting-state">${livePerformances ? "On" : "Off"}</span><label class="setting-switch" title="Filter searches for concert recordings"><input id="livePerformanceToggle" type="checkbox" aria-label="Search for live concert recordings" ${livePerformances ? "checked" : ""}><span aria-hidden="true"></span></label></article>
     <article class="setting-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-quality"/></svg><span class="setting-copy"><strong>Audio quality</strong><span>Quality will reflect the active source and track.</span></span><span class="setting-state">Unavailable</span></article>
     <article class="setting-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-lock"/></svg><span class="setting-copy"><strong>Authorized downloads</strong><span>Exports appear only when a source permits them.</span></span><span class="setting-state">Unavailable</span></article>
-    <article class="setting-card discord-setting"><svg viewBox="0 0 127.14 96.36" aria-hidden="true"><use href="#riff-discord"/></svg><span class="setting-copy"><strong>Discord Rich Presence</strong><span>Uses local Discord IPC. Song and artist are shared only while enabled. Discord may require approved or test-listed RPC access.</span></span><div class="discord-controls"><label for="discordClientId">Application ID</label><div class="discord-id-row"><input id="discordClientId" inputmode="numeric" autocomplete="off" maxlength="24" value="${escapeHtml(discordClientId)}" placeholder="From the Discord Developer Portal"><button class="button-quiet" id="saveDiscordSettings" type="button">Save</button></div><div class="discord-status-row"><span id="discordPresenceState" class="setting-state">${escapeHtml(discordPresenceStatus)}</span><label class="setting-switch" title="Share the current track with Discord"><input id="discordPresenceEnabled" type="checkbox" aria-label="Enable Discord Rich Presence" ${discordPresenceEnabled ? "checked" : ""}><span aria-hidden="true"></span></label></div></div></article>`;
+    <article class="setting-card discord-setting"><svg viewBox="0 0 127.14 96.36" aria-hidden="true"><use href="#riff-discord"/></svg><span class="setting-copy"><strong>Discord Rich Presence</strong><span>Uses local Discord IPC. Song and artist are shared only while enabled. Discord may require approved or test-listed RPC access.</span></span><div class="discord-controls"><label for="discordClientId">Application ID</label><div class="discord-id-row"><input id="discordClientId" inputmode="numeric" autocomplete="off" maxlength="24" value="${escapeHtml(discordClientId)}" placeholder="From the Discord Developer Portal"><button class="button-quiet" id="saveDiscordSettings" type="button">Save</button></div><div class="discord-status-row"><span id="discordPresenceState" class="setting-state">${escapeHtml(discordPresenceStatus)}</span><label class="setting-switch" title="Share the current track with Discord"><input id="discordPresenceEnabled" type="checkbox" aria-label="Enable Discord Rich Presence" ${discordPresenceEnabled ? "checked" : ""}><span aria-hidden="true"></span></label></div></div></article>`}`;
+
+  const sectionLabel = settingsSection === "integrations" ? "Integrations" : settingsSection === "playback" ? "Playback" : "Accessibility";
 
   return `<div class="page settings-page">${pageHeading("PREFERENCES", "Settings", "Provider connections")}
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <button class="settings-nav-item${settingsSection === "integrations" ? " active" : ""}" type="button" data-settings-section="integrations"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-integrations"/></svg><span>Integrations</span></button>
         <button class="settings-nav-item${settingsSection === "playback" ? " active" : ""}" type="button" data-settings-section="playback"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-audio-output"/></svg><span>Playback</span></button>
+        <button class="settings-nav-item${settingsSection === "accessibility" ? " active" : ""}" type="button" data-settings-section="accessibility"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-interface"/></svg><span>Accessibility</span></button>
       </nav>
-      <section class="settings-pane" aria-label="${settingsSection === "integrations" ? "Integrations" : "Playback"} settings"><div class="settings-list">${settingsRows}</div></section>
+      <section class="settings-pane" aria-label="${sectionLabel} settings"><div class="settings-list">${settingsRows}</div></section>
     </div>
   </div>`;
-};
-
-const openProviderSettings = (provider?: Provider): void => {
-  currentView = "settings";
-  settingsSection = "integrations";
-  renderPage();
-  if (provider) {
-    window.setTimeout(() => document.querySelector(`#provider-card-${provider}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
-  }
 };
 
 const openProviderDialog = (provider: Provider): void => {
   const label = providerLabel(provider);
   const signupLabel = provider === "youtube" ? "Create a Google account" : `Create a ${label} account`;
   const accountExplain = provider === "youtube"
-    ? "YouTube accounts use Google. Search can use a YouTube Data API key or a Google account you authorize in the browser."
+    ? "Sign in with Google to use your YouTube account. Videos open in YouTube’s official player."
     : provider === "spotify"
-      ? "Spotify authorization opens in your browser and returns to Viviette after approval. Search and playback remain on Spotify."
-      : "Connect your SoundCloud account through SoundCloud’s own sign-in page. Public search still needs the registered app credentials.";
+      ? "Spotify sign-in opens in your browser. Catalog search and playback stay on Spotify."
+      : "Sign in to SoundCloud to search tracks and play them in its official player.";
   const status = providerStatus(provider);
   const connectAction = status.connected
     ? `<button class="primary" type="button" disabled>Connected</button>`
     : status.connectable
       ? `<button class="primary" type="button" data-provider-connect="${provider}">Continue with ${provider === "youtube" ? "Google" : label}</button>`
-      : `<button type="button" data-provider-settings="${provider}">Set up provider credentials</button>`;
+      : `<button class="primary" type="button" disabled title="Sign-in is not configured for this build yet">Sign-in unavailable</button>`;
   const signInNote = "Viviette never receives your provider password. Sign-in opens in your default browser and returns to the app after authorization.";
-  providerDialogBody.innerHTML = `<div class="dialog-kicker">${label.toLocaleUpperCase()} ACCOUNT</div><h2 id="providerDialogTitle">Connect ${label}</h2><p>${accountExplain}</p><p>${signInNote}</p><div class="provider-connect-actions">${connectAction}<button type="button" data-provider-signup="${provider}">${signupLabel}</button>${status.configured && provider !== "spotify" ? `<button type="button" data-provider-continue-search>Continue without signing in</button>` : ""}</div><div class="provider-dialog-foot"><button type="button" data-provider-dialog-close>Cancel</button></div>`;
+  const signInState = !status.connectable && !status.connected ? `<p class="provider-note">${escapeHtml(status.detail)}</p>` : "";
+  providerDialog.classList.add("provider-login");
+  providerDialogBody.innerHTML = `<div class="dialog-kicker">${label.toLocaleUpperCase()} ACCOUNT</div><h2 id="providerDialogTitle">${status.connected ? `Connected to ${label}` : `Log in to ${label}`}</h2><p>${accountExplain}</p><p>${signInNote}</p>${signInState}<div class="provider-connect-actions">${connectAction}<button type="button" data-provider-signup="${provider}">${signupLabel}</button></div><div class="provider-dialog-foot"><button type="button" data-provider-dialog-close>Close</button></div>`;
   if (!providerDialog.open) providerDialog.showModal();
 };
+
+providerDialog.addEventListener("close", () => providerDialog.classList.remove("provider-login"));
 
 const refreshProviderStatuses = async (): Promise<void> => {
   if (!isTauri()) return;
   try {
     const states = await invoke<ProviderStatus[]>("provider_status");
     providerStatuses = Object.fromEntries(states.map((item) => [item.provider, item])) as Record<Provider, ProviderStatus>;
+    updateSourceControls();
   } catch (error) {
-    announce(`Could not read saved provider setup: ${String(error)}`);
+    announce(`Could not read provider account status: ${String(error)}`);
   }
 };
 
@@ -374,6 +436,10 @@ const openProviderUrl = async (url: string): Promise<void> => {
 };
 
 const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElement): Promise<void> => {
+  if (!providerStatus(provider).connectable) {
+    announce(providerStatus(provider).detail);
+    return;
+  }
   if (!isTauri()) {
     announce("Provider sign-in is available in the installed desktop app.");
     return;
@@ -387,6 +453,13 @@ const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElem
   try {
     const message = await invoke<string>("provider_connect", { provider });
     await refreshProviderStatuses();
+    const enableLiveFilter = pendingLiveFilter && selectedSource === provider;
+    pendingLiveFilter = false;
+    if (enableLiveFilter) {
+      livePerformances = true;
+      try { localStorage.setItem(liveSearchStorageKey, "true"); } catch { /* active for this session */ }
+    }
+    providerDialog.classList.remove("provider-login");
     providerDialog.close();
     announce(message);
     if (searchInput.value.trim()) scheduleProviderSearch();
@@ -396,26 +469,6 @@ const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElem
       connectButton.disabled = false;
       connectButton.textContent = connectButtonLabel;
     }
-    announce(String(error));
-  }
-};
-
-const saveProviderSetup = async (provider: Provider, card: HTMLElement): Promise<void> => {
-  const value = (field: string): string => card.querySelector<HTMLInputElement>(`[data-provider-field="${field}"]`)?.value.trim() ?? "";
-  if (!isTauri()) {
-    announce("Provider credentials can be saved in the installed desktop app.");
-    return;
-  }
-  try {
-    await invoke("provider_save_config", {
-      config: { provider, clientId: value("clientId"), clientSecret: value("clientSecret"), apiKey: value("apiKey") },
-    });
-    card.querySelectorAll<HTMLInputElement>("input[type=password]").forEach((input) => { input.value = ""; });
-    await refreshProviderStatuses();
-    renderPage();
-    announce(`${providerLabel(provider)} setup saved in the system credential store.`);
-    if (searchInput.value.trim()) scheduleProviderSearch();
-  } catch (error) {
     announce(String(error));
   }
 };
@@ -436,6 +489,11 @@ const searchProvider = async (): Promise<void> => {
   providerSearchError = "";
   providerSearchPending = true;
   currentView = "home";
+  if (!providerStatus(selectedSource).connected) {
+    providerSearchPending = false;
+    renderPage();
+    return;
+  }
   renderPage();
   if (selectedSource === "spotify") {
     providerSearchPending = false;
@@ -497,6 +555,8 @@ const renderPage = (): void => {
     const pageIsDiscoverContent = item.dataset.view === "home" && ["browse", "library", "playlists"].includes(currentView);
     item.classList.toggle("active", item.dataset.view === currentView || pageIsDiscoverContent);
   });
+  updateSourceControls();
+  refreshAccessibilityValues();
   updatePlayer();
 };
 
@@ -791,32 +851,31 @@ document.querySelectorAll<HTMLButtonElement>(".nav-item[data-view]").forEach((bu
 });
 
 document.querySelectorAll<HTMLButtonElement>(".source-option[data-source]").forEach((button) => {
-  const source = button.dataset.source ?? "youtube";
-  const selected = source === "live" ? livePerformances : source === selectedSource;
-  button.classList.toggle("is-selected", selected);
-  button.setAttribute("aria-pressed", String(selected));
   button.addEventListener("click", () => {
+    const source = button.dataset.source ?? "youtube";
     if (source === "live") {
+      if (!livePerformances && !providerStatus(selectedSource).connected) {
+        pendingLiveFilter = true;
+        openProviderDialog(selectedSource);
+        announce(`Log in to ${providerLabel(selectedSource)} to search live performances.`);
+        return;
+      }
       livePerformances = !livePerformances;
       try { localStorage.setItem(liveSearchStorageKey, String(livePerformances)); }
       catch { announce("The live performance filter could not be saved."); }
     } else {
+      if (source !== selectedSource) pendingLiveFilter = false;
       selectedSource = source as Provider;
       try { localStorage.setItem(sourceStorageKey, selectedSource); }
       catch { announce("The selected provider could not be saved."); }
     }
-    document.querySelectorAll<HTMLButtonElement>(".source-option[data-source]").forEach((option) => {
-      const optionSource = option.dataset.source;
-      const isSelected = optionSource === "live" ? livePerformances : optionSource === selectedSource;
-      option.classList.toggle("is-selected", isSelected);
-      option.setAttribute("aria-pressed", String(isSelected));
-    });
+    updateSourceControls();
     if (source === "live") {
       announce(livePerformances ? "Live concert recordings filter enabled." : "Live concert recordings filter disabled.");
     } else {
       const provider = source as Provider;
       if (!providerStatus(provider).connected) openProviderDialog(provider);
-      announce(provider === "spotify" ? "Spotify selected. Search opens on Spotify." : `${providerLabel(provider)} selected. Search uses this provider’s catalog.`);
+      else announce(provider === "spotify" ? "Spotify selected. Search opens on Spotify." : `${providerLabel(provider)} selected. Search uses this provider’s catalog.`);
     }
     if (searchInput.value.trim()) scheduleProviderSearch();
     else renderPage();
@@ -838,22 +897,30 @@ providerDialogBody.addEventListener("click", (event: MouseEvent) => {
     void openProviderUrl(url).catch((error) => announce(String(error)));
     return;
   }
-  const settings = target.closest<HTMLButtonElement>("[data-provider-settings]");
-  if (settings?.dataset.providerSettings) {
+  if (target.closest("[data-provider-dialog-close]")) {
+    providerDialog.classList.remove("provider-login");
     providerDialog.close();
-    openProviderSettings(settings.dataset.providerSettings as Provider);
-    return;
   }
-  if (target.closest("[data-provider-continue-search]") || target.closest("[data-provider-dialog-close]")) providerDialog.close();
 });
 
 mainContent.addEventListener("click", (event: MouseEvent) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
   const sectionButton = target.closest<HTMLButtonElement>("[data-settings-section]");
-  if (!sectionButton?.dataset.settingsSection) return;
-  settingsSection = sectionButton.dataset.settingsSection as "integrations" | "playback";
-  renderPage();
+  if (sectionButton?.dataset.settingsSection) {
+    settingsSection = sectionButton.dataset.settingsSection as "integrations" | "playback" | "accessibility";
+    renderPage();
+    return;
+  }
+  if (target.closest("[data-accessibility-reset]")) {
+    accessibilityZoom = 100;
+    accessibilityFontScale = 100;
+    persistAccessibility();
+    void applyAccessibilitySettings(true);
+    refreshAccessibilityValues();
+    announce("Accessibility settings reset to defaults.");
+    return;
+  }
 });
 
 searchInput.addEventListener("input", () => {
@@ -873,9 +940,9 @@ searchInput.addEventListener("keydown", (event: KeyboardEvent) => {
 mainContent.addEventListener("click", (event: MouseEvent) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
-  const settingsFor = target.closest<HTMLElement>("[data-provider-settings]")?.dataset.providerSettings;
-  if (settingsFor === "youtube" || settingsFor === "soundcloud" || settingsFor === "spotify") {
-    openProviderSettings(settingsFor);
+  const loginFor = target.closest<HTMLButtonElement>("[data-provider-login]")?.dataset.providerLogin;
+  if (loginFor === "youtube" || loginFor === "soundcloud" || loginFor === "spotify") {
+    openProviderDialog(loginFor);
     return;
   }
   if (target.closest("[data-provider-search-external]")) {
@@ -897,13 +964,6 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
     }
     return;
   }
-  const providerSaveButton = target.closest<HTMLButtonElement>("[data-provider-save]");
-  if (providerSaveButton?.dataset.providerSave) {
-    const provider = providerSaveButton.dataset.providerSave as Provider;
-    const card = providerSaveButton.closest<HTMLElement>(".provider-settings-card");
-    if (card) void saveProviderSetup(provider, card);
-    return;
-  }
   const providerConnectButton = target.closest<HTMLButtonElement>("[data-provider-connect]");
   if (providerConnectButton?.dataset.providerConnect) {
     void connectProvider(providerConnectButton.dataset.providerConnect as Provider, providerConnectButton);
@@ -923,13 +983,6 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
   if (providerSignupButton?.dataset.providerSignup) {
     const provider = providerSignupButton.dataset.providerSignup as Provider;
     const url = provider === "youtube" ? "https://accounts.google.com/signup" : provider === "soundcloud" ? "https://soundcloud.com/signup" : "https://www.spotify.com/signup";
-    void openProviderUrl(url).catch((error) => announce(String(error)));
-    return;
-  }
-  const providerConsoleButton = target.closest<HTMLButtonElement>("[data-provider-console]");
-  if (providerConsoleButton?.dataset.providerConsole) {
-    const provider = providerConsoleButton.dataset.providerConsole as Provider;
-    const url = provider === "youtube" ? "https://console.cloud.google.com/apis/credentials" : provider === "soundcloud" ? "https://soundcloud.com/you/apps" : "https://developer.spotify.com/dashboard";
     void openProviderUrl(url).catch((error) => announce(String(error)));
     return;
   }
@@ -975,6 +1028,13 @@ mainContent.addEventListener("change", (event: Event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement)) return;
   if (target.id === "livePerformanceToggle") {
+    if (target.checked && !providerStatus(selectedSource).connected) {
+      target.checked = false;
+      pendingLiveFilter = true;
+      openProviderDialog(selectedSource);
+      announce(`Log in to ${providerLabel(selectedSource)} to search live performances.`);
+      return;
+    }
     livePerformances = target.checked;
     try { localStorage.setItem(liveSearchStorageKey, String(livePerformances)); } catch { /* filter remains active for this session */ }
     document.querySelector<HTMLButtonElement>('.source-option[data-source="live"]')?.classList.toggle("is-selected", livePerformances);
@@ -993,6 +1053,26 @@ mainContent.addEventListener("change", (event: Event) => {
   const state = document.querySelector<HTMLElement>("#audioOutputState");
   if (state) state.textContent = pauseOnOutputDisconnect ? "On" : "Off";
   announce(pauseOnOutputDisconnect ? "Auto-pause enabled for audio output changes." : "Auto-pause disabled.");
+});
+
+mainContent.addEventListener("input", (event: Event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  if (target.id === "accessibilityZoom") {
+    accessibilityZoom = Number(target.value);
+    persistAccessibility();
+    void applyAccessibilitySettings(true);
+    refreshAccessibilityValues();
+  } else if (target.id === "accessibilityFontScale") {
+    accessibilityFontScale = Number(target.value);
+    persistAccessibility();
+    void applyAccessibilitySettings();
+    refreshAccessibilityValues();
+  }
+});
+
+providerDialog.addEventListener("close", () => {
+  pendingLiveFilter = false;
 });
 
 mainContent.addEventListener("change", (event: Event) => {
@@ -1200,6 +1280,7 @@ if (isTauri()) {
   }).catch(() => undefined);
 }
 
+void applyAccessibilitySettings();
 renderPage();
 if (isTauri()) void refreshProviderStatuses().then(() => renderPage());
 void loadLibrary();

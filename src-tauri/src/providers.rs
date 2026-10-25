@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::{mpsc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -21,17 +22,8 @@ use uuid::Uuid;
 const KEYRING_SERVICE: &str = "app.viviette.providers";
 const OAUTH_PORT: u16 = 47619;
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:47619/callback";
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderConfigInput {
-    provider: String,
-    client_id: String,
-    #[serde(default)]
-    client_secret: String,
-    #[serde(default)]
-    api_key: String,
-}
+const SOUNDCLOUD_REDIRECT_URI: &str = "viviette://soundcloud/callback";
+static SOUNDCLOUD_CALLBACK: OnceLock<Mutex<Option<mpsc::Sender<String>>>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +75,8 @@ fn valid_provider(provider: &str) -> Result<&'static str, String> {
 }
 
 fn credential(key: &str) -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, key).map_err(|error| format!("Could not access the system credential store: {error}"))
+    Entry::new(KEYRING_SERVICE, key)
+        .map_err(|error| format!("Could not access the system credential store: {error}"))
 }
 
 fn read_secret(key: &str) -> Result<Option<String>, String> {
@@ -95,9 +88,9 @@ fn read_secret(key: &str) -> Result<Option<String>, String> {
 }
 
 fn write_secret(key: &str, value: &str) -> Result<(), String> {
-    credential(key)?
-        .set_password(value)
-        .map_err(|error| format!("Could not save a provider setting to the system credential store: {error}"))
+    credential(key)?.set_password(value).map_err(|error| {
+        format!("Could not save a provider setting to the system credential store: {error}")
+    })
 }
 
 fn remove_secret(key: &str) -> Result<(), String> {
@@ -108,45 +101,17 @@ fn remove_secret(key: &str) -> Result<(), String> {
 }
 
 fn config_value(provider: &str, field: &str) -> Result<String, String> {
+    let build_value = match (provider, field) {
+        ("youtube", "client_id") => option_env!("VIVIETTE_YOUTUBE_CLIENT_ID"),
+        ("youtube", "client_secret") => option_env!("VIVIETTE_YOUTUBE_CLIENT_SECRET"),
+        ("soundcloud", "client_id") => option_env!("VIVIETTE_SOUNDCLOUD_CLIENT_ID"),
+        ("spotify", "client_id") => option_env!("VIVIETTE_SPOTIFY_CLIENT_ID"),
+        _ => None,
+    };
+    if let Some(value) = build_value.filter(|value| !value.is_empty()) {
+        return Ok(value.to_string());
+    }
     Ok(read_secret(&format!("{provider}.{field}"))?.unwrap_or_default())
-}
-
-pub fn save_config(config: ProviderConfigInput) -> Result<(), String> {
-    let provider = valid_provider(config.provider.trim())?;
-    let client_id = config.client_id.trim();
-    let client_secret = config.client_secret.trim();
-    let api_key = config.api_key.trim();
-
-    let saved_client_id = config_value(provider, "client_id")?;
-    let saved_client_secret = config_value(provider, "client_secret")?;
-    let saved_api_key = config_value(provider, "api_key")?;
-    let next_client_id = if client_id.is_empty() { saved_client_id } else { client_id.to_string() };
-    let next_client_secret = if client_secret.is_empty() { saved_client_secret } else { client_secret.to_string() };
-    let next_api_key = if api_key.is_empty() { saved_api_key } else { api_key.to_string() };
-
-    match provider {
-        "youtube" if next_api_key.is_empty() && (next_client_id.is_empty() || next_client_secret.is_empty()) => {
-            return Err("Add a YouTube Data API key, or configure a Google OAuth Client ID and Client Secret.".to_string());
-        }
-        "soundcloud" if next_client_id.is_empty() || next_client_secret.is_empty() => {
-            return Err("Add both SoundCloud API app credentials before saving.".to_string());
-        }
-        "spotify" if next_client_id.is_empty() => {
-            return Err("Add your Spotify app Client ID before saving.".to_string());
-        }
-        _ => {}
-    }
-
-    if !client_id.is_empty() {
-        write_secret(&format!("{provider}.client_id"), client_id)?;
-    }
-    if !client_secret.is_empty() {
-        write_secret(&format!("{provider}.client_secret"), client_secret)?;
-    }
-    if !api_key.is_empty() {
-        write_secret(&format!("{provider}.api_key"), api_key)?;
-    }
-    Ok(())
 }
 
 pub fn status() -> Result<Vec<ProviderStatus>, String> {
@@ -155,22 +120,16 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
         let connected = read_secret(&format!("{provider}.user_token"))?.is_some();
         let (configured, connectable, detail) = match provider {
             "youtube" => {
-                let has_key = !config_value(provider, "api_key")?.is_empty();
-                let has_oauth = !config_value(provider, "client_id")?.is_empty()
-                    && !config_value(provider, "client_secret")?.is_empty();
+                let has_oauth = !config_value(provider, "client_id")?.is_empty();
                 (
-                    has_key || connected,
+                    has_oauth,
                     has_oauth,
                     if connected {
-                        "Google account connected · search ready".to_string()
-                    } else if has_key && has_oauth {
-                        "Search ready · Google sign-in available".to_string()
-                    } else if has_key {
-                        "Search ready · Google sign-in credentials not set".to_string()
+                        "Google account connected".to_string()
                     } else if has_oauth {
-                        "Connect Google to search YouTube".to_string()
+                        "Log in with Google to search YouTube".to_string()
                     } else {
-                        "Add a YouTube API key or Google OAuth app in Settings".to_string()
+                        "YouTube sign-in is not configured for this build".to_string()
                     },
                 )
             }
@@ -181,11 +140,11 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
                     configured,
                     configured,
                     if connected {
-                        "App configured · SoundCloud account connected".to_string()
+                        "SoundCloud account connected".to_string()
                     } else if configured {
-                        "App configured · sign in to use your account".to_string()
+                        "Log in to SoundCloud to search tracks".to_string()
                     } else {
-                        "Add SoundCloud API app credentials in Settings".to_string()
+                        "SoundCloud sign-in is not configured for this build".to_string()
                     },
                 )
             }
@@ -195,11 +154,11 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
                     configured,
                     configured,
                     if connected {
-                        "Spotify account connected · search stays on Spotify".to_string()
+                        "Spotify account connected".to_string()
                     } else if configured {
-                        "Spotify app configured · ready to sign in".to_string()
+                        "Log in to Spotify to search its catalog".to_string()
                     } else {
-                        "Add a Spotify app Client ID in Settings".to_string()
+                        "Spotify sign-in is not configured for this build".to_string()
                     },
                 )
             }
@@ -218,13 +177,19 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
 
 fn http_client() -> Result<Client, String> {
     Client::builder()
-        .user_agent("Viviette/0.1.5 provider integration")
+        .user_agent("Viviette/0.1.6 provider integration")
         .timeout(Duration::from_secs(18))
         .build()
         .map_err(|error| format!("Could not initialize provider networking: {error}"))
 }
 
-fn oauth_url(provider: &str, client_id: &str, challenge: &str, state: &str) -> Result<String, String> {
+fn oauth_url(
+    provider: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    challenge: &str,
+    state: &str,
+) -> Result<String, String> {
     let base = match provider {
         "youtube" => "https://accounts.google.com/o/oauth2/v2/auth",
         "soundcloud" => "https://secure.soundcloud.com/authorize",
@@ -236,7 +201,7 @@ fn oauth_url(provider: &str, client_id: &str, challenge: &str, state: &str) -> R
         let mut query = url.query_pairs_mut();
         query
             .append_pair("client_id", client_id)
-            .append_pair("redirect_uri", OAUTH_REDIRECT_URI)
+            .append_pair("redirect_uri", redirect_uri)
             .append_pair("response_type", "code")
             .append_pair("state", state)
             .append_pair("code_challenge_method", "S256")
@@ -273,7 +238,11 @@ fn callback_code(listener: &TcpListener, expected_state: &str) -> Result<String,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(120));
             }
-            Err(error) => return Err(format!("Could not receive the provider sign-in response: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "Could not receive the provider sign-in response: {error}"
+                ))
+            }
         }
     }
     Err("Provider sign-in timed out. Try connecting again.".to_string())
@@ -296,33 +265,65 @@ fn read_callback(stream: &mut TcpStream, expected_state: &str) -> Result<Option<
         .read(&mut buffer)
         .map_err(|error| format!("Could not read the provider sign-in response: {error}"))?;
     let request = String::from_utf8_lossy(&buffer[..length]);
-    let Some(target) = request.lines().next().and_then(|line| line.split_whitespace().nth(1)) else {
+    let Some(target) = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+    else {
         return Ok(None);
     };
     let callback = Url::parse(&format!("http://127.0.0.1{target}"))
         .map_err(|error| format!("Provider returned an invalid sign-in response: {error}"))?;
     if callback.path() != "/callback" {
-        respond_to_browser(stream, "Return to Viviette", "This local address is only used to complete provider sign-in.");
+        respond_to_browser(
+            stream,
+            "Return to Viviette",
+            "This local address is only used to complete provider sign-in.",
+        );
         return Ok(None);
     }
-    let query: std::collections::HashMap<String, String> = callback.query_pairs().into_owned().collect();
+    let query: std::collections::HashMap<String, String> =
+        callback.query_pairs().into_owned().collect();
     if query.get("state").map(String::as_str) != Some(expected_state) {
-        respond_to_browser(stream, "Sign-in did not match", "For your security, this sign-in response was rejected.");
+        respond_to_browser(
+            stream,
+            "Sign-in did not match",
+            "For your security, this sign-in response was rejected.",
+        );
         return Ok(None);
     }
     if let Some(error) = query.get("error") {
-        respond_to_browser(stream, "Sign-in cancelled", "The provider declined or cancelled the authorization request.");
+        respond_to_browser(
+            stream,
+            "Sign-in cancelled",
+            "The provider declined or cancelled the authorization request.",
+        );
         return Err(format!("Provider sign-in failed: {error}"));
     }
     let Some(code) = query.get("code") else {
-        respond_to_browser(stream, "Sign-in incomplete", "The provider did not return an authorization code.");
+        respond_to_browser(
+            stream,
+            "Sign-in incomplete",
+            "The provider did not return an authorization code.",
+        );
         return Err("Provider did not return an authorization code.".to_string());
     };
-    respond_to_browser(stream, "Sign-in complete", "Your account was connected securely.");
+    respond_to_browser(
+        stream,
+        "Sign-in complete",
+        "Your account was connected securely.",
+    );
     Ok(Some(code.clone()))
 }
 
-fn exchange_code(provider: &str, code: &str, verifier: &str, client_id: &str, client_secret: &str) -> Result<OAuthToken, String> {
+fn exchange_code(
+    provider: &str,
+    code: &str,
+    verifier: &str,
+    client_id: &str,
+    client_secret: &str,
+    redirect_uri: &str,
+) -> Result<OAuthToken, String> {
     let endpoint = match provider {
         "youtube" => "https://oauth2.googleapis.com/token",
         "soundcloud" => "https://secure.soundcloud.com/oauth/token",
@@ -333,10 +334,10 @@ fn exchange_code(provider: &str, code: &str, verifier: &str, client_id: &str, cl
         ("grant_type", "authorization_code".to_string()),
         ("client_id", client_id.to_string()),
         ("code", code.to_string()),
-        ("redirect_uri", OAUTH_REDIRECT_URI.to_string()),
+        ("redirect_uri", redirect_uri.to_string()),
         ("code_verifier", verifier.to_string()),
     ];
-    if provider != "spotify" {
+    if !client_secret.is_empty() {
         fields.push(("client_secret", client_secret.to_string()));
     }
     let response = http_client()?
@@ -353,7 +354,7 @@ fn parse_token_response(response: Response) -> Result<OAuthToken, String> {
         .text()
         .map_err(|error| format!("Could not read the provider token response: {error}"))?;
     if !status.is_success() {
-        return Err(format!("Provider authorization failed ({status}). Check the client credentials and redirect URI in Settings."));
+        return Err(format!("Provider authorization failed ({status}). The provider app may need configuration or approval."));
     }
     let token: TokenResponse = serde_json::from_str(&body)
         .map_err(|error| format!("Provider returned an unreadable token response: {error}"))?;
@@ -364,32 +365,149 @@ fn parse_token_response(response: Response) -> Result<OAuthToken, String> {
     })
 }
 
+fn clear_soundcloud_callback() {
+    if let Some(callback) = SOUNDCLOUD_CALLBACK.get() {
+        if let Ok(mut callback) = callback.lock() {
+            *callback = None;
+        }
+    }
+}
+
+fn wait_for_soundcloud_callback(
+    app: &tauri::AppHandle,
+    auth_url: &str,
+    expected_state: &str,
+) -> Result<String, String> {
+    let callback = SOUNDCLOUD_CALLBACK.get_or_init(|| Mutex::new(None));
+    let (sender, receiver) = mpsc::channel();
+    {
+        let mut active = callback
+            .lock()
+            .map_err(|_| "SoundCloud sign-in could not start.".to_string())?;
+        if active.is_some() {
+            return Err("A provider sign-in is already in progress.".to_string());
+        }
+        *active = Some(sender);
+    }
+    if let Err(error) = app.opener().open_url(auth_url, None::<&str>) {
+        clear_soundcloud_callback();
+        return Err(format!("Could not open the provider sign-in page: {error}"));
+    }
+    let callback_url = match receiver.recv_timeout(Duration::from_secs(180)) {
+        Ok(url) => url,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            clear_soundcloud_callback();
+            return Err("SoundCloud sign-in timed out. Try connecting again.".to_string());
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            clear_soundcloud_callback();
+            return Err("SoundCloud sign-in was interrupted. Try again.".to_string());
+        }
+    };
+    clear_soundcloud_callback();
+    let callback = Url::parse(&callback_url)
+        .map_err(|_| "SoundCloud returned an invalid sign-in link.".to_string())?;
+    if callback.scheme() != "viviette"
+        || callback.host_str() != Some("soundcloud")
+        || callback.path() != "/callback"
+    {
+        return Err("SoundCloud returned an unexpected sign-in link.".to_string());
+    }
+    let query: std::collections::HashMap<String, String> =
+        callback.query_pairs().into_owned().collect();
+    if query.get("state").map(String::as_str) != Some(expected_state) {
+        return Err("For your security, the SoundCloud sign-in response was rejected.".to_string());
+    }
+    if let Some(error) = query.get("error") {
+        return Err(format!("SoundCloud sign-in failed: {error}"));
+    }
+    query
+        .get("code")
+        .cloned()
+        .ok_or_else(|| "SoundCloud did not return an authorization code.".to_string())
+}
+
+pub fn receive_deep_link(url: Url) {
+    if url.scheme() != "viviette"
+        || url.host_str() != Some("soundcloud")
+        || url.path() != "/callback"
+    {
+        return;
+    }
+    if let Some(callback) = SOUNDCLOUD_CALLBACK.get() {
+        if let Ok(active) = callback.lock() {
+            if let Some(sender) = active.as_ref() {
+                let _ = sender.send(url.to_string());
+            }
+        }
+    }
+}
+
 pub fn connect(app: &tauri::AppHandle, provider: &str) -> Result<String, String> {
     let provider = valid_provider(provider)?;
     let client_id = config_value(provider, "client_id")?;
     let client_secret = config_value(provider, "client_secret")?;
     if client_id.is_empty() {
-        return Err(format!("Add the {provider} app Client ID in Settings → Integrations first."));
+        return Err(format!(
+            "{provider} sign-in is not configured for this build. Please try another provider."
+        ));
     }
-    if client_secret.is_empty() && provider != "spotify" {
-        return Err(format!("Add the {provider} app Client Secret in Settings → Integrations first."));
+    if client_secret.is_empty() && provider == "soundcloud" {
+        return Err(
+            "SoundCloud sign-in is not configured for this build. Please try another provider."
+                .to_string(),
+        );
     }
-    let listener = TcpListener::bind(("127.0.0.1", OAUTH_PORT))
-        .map_err(|error| format!("Could not start the local sign-in callback on port {OAUTH_PORT}: {error}"))?;
+    let redirect_uri = if provider == "soundcloud" {
+        SOUNDCLOUD_REDIRECT_URI
+    } else {
+        OAUTH_REDIRECT_URI
+    };
+    let listener = if provider == "soundcloud" {
+        None
+    } else {
+        Some(
+            TcpListener::bind(("127.0.0.1", OAUTH_PORT)).map_err(|error| {
+                format!("Could not start the local sign-in callback on port {OAUTH_PORT}: {error}")
+            })?,
+        )
+    };
     let state = Uuid::new_v4().simple().to_string();
     let verifier = random_verifier();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let url = oauth_url(provider, &client_id, &challenge, &state)?;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|error| format!("Could not open the provider sign-in page: {error}"))?;
-    let code = callback_code(&listener, &state)?;
-    let token = exchange_code(provider, &code, &verifier, &client_id, &client_secret)?;
-    write_secret(&format!("{provider}.user_token"), &serde_json::to_string(&token).map_err(|error| error.to_string())?)?;
+    let url = oauth_url(provider, &client_id, redirect_uri, &challenge, &state)?;
+    let code = if provider == "soundcloud" {
+        wait_for_soundcloud_callback(app, &url, &state)?
+    } else {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|error| format!("Could not open the provider sign-in page: {error}"))?;
+        callback_code(
+            listener
+                .as_ref()
+                .expect("loopback listener for Google/Spotify"),
+            &state,
+        )?
+    };
+    let token = exchange_code(
+        provider,
+        &code,
+        &verifier,
+        &client_id,
+        &client_secret,
+        redirect_uri,
+    )?;
+    write_secret(
+        &format!("{provider}.user_token"),
+        &serde_json::to_string(&token).map_err(|error| error.to_string())?,
+    )?;
     Ok(match provider {
-        "youtube" => "Google account connected. Public video search remains available with your API key.".to_string(),
+        "youtube" => "Google account connected. YouTube search is ready.".to_string(),
         "soundcloud" => "SoundCloud account connected.".to_string(),
-        "spotify" => "Spotify account connected. Spotify catalog search and playback stay on Spotify.".to_string(),
+        "spotify" => {
+            "Spotify account connected. Spotify catalog search and playback stay on Spotify."
+                .to_string()
+        }
         _ => "Account connected.".to_string(),
     })
 }
@@ -397,24 +515,34 @@ pub fn connect(app: &tauri::AppHandle, provider: &str) -> Result<String, String>
 pub fn disconnect(provider: &str) -> Result<(), String> {
     let provider = valid_provider(provider)?;
     remove_secret(&format!("{provider}.user_token"))?;
-    if provider == "soundcloud" {
-        remove_secret("soundcloud.public_token")?;
-    }
     Ok(())
 }
 
 fn now_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn load_user_token(provider: &str) -> Result<Option<OAuthToken>, String> {
     read_secret(&format!("{provider}.user_token"))?
-        .map(|value| serde_json::from_str(&value).map_err(|error| format!("Saved provider token is invalid: {error}")))
+        .map(|value| {
+            serde_json::from_str(&value)
+                .map_err(|error| format!("Saved provider token is invalid: {error}"))
+        })
         .transpose()
 }
 
-fn refresh_token(provider: &str, token_key: &str, previous: &OAuthToken) -> Result<OAuthToken, String> {
-    let refresh = previous.refresh_token.as_deref().ok_or_else(|| "Your provider session expired. Connect the account again.".to_string())?;
+fn refresh_token(
+    provider: &str,
+    token_key: &str,
+    previous: &OAuthToken,
+) -> Result<OAuthToken, String> {
+    let refresh = previous
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| "Your provider session expired. Connect the account again.".to_string())?;
     let client_id = config_value(provider, "client_id")?;
     let client_secret = config_value(provider, "client_secret")?;
     let endpoint = match provider {
@@ -428,19 +556,29 @@ fn refresh_token(provider: &str, token_key: &str, previous: &OAuthToken) -> Resu
         ("client_id", client_id),
         ("refresh_token", refresh.to_string()),
     ];
-    if provider != "spotify" {
+    if !client_secret.is_empty() {
         fields.push(("client_secret", client_secret));
     }
-    let mut next = parse_token_response(http_client()?.post(endpoint).form(&fields).send().map_err(|error| format!("Could not refresh provider authorization: {error}"))?)?;
+    let mut next = parse_token_response(
+        http_client()?
+            .post(endpoint)
+            .form(&fields)
+            .send()
+            .map_err(|error| format!("Could not refresh provider authorization: {error}"))?,
+    )?;
     if next.refresh_token.is_none() {
         next.refresh_token = previous.refresh_token.clone();
     }
-    write_secret(token_key, &serde_json::to_string(&next).map_err(|error| error.to_string())?)?;
+    write_secret(
+        token_key,
+        &serde_json::to_string(&next).map_err(|error| error.to_string())?,
+    )?;
     Ok(next)
 }
 
 fn current_user_access_token(provider: &str) -> Result<String, String> {
-    let token = load_user_token(provider)?.ok_or_else(|| format!("Connect your {provider} account before searching this catalog."))?;
+    let token = load_user_token(provider)?
+        .ok_or_else(|| format!("Connect your {provider} account before searching this catalog."))?;
     let token = if token.expires_at <= now_seconds().saturating_add(60) {
         refresh_token(provider, &format!("{provider}.user_token"), &token)?
     } else {
@@ -449,51 +587,28 @@ fn current_user_access_token(provider: &str) -> Result<String, String> {
     Ok(token.access_token)
 }
 
-fn soundcloud_public_access_token() -> Result<String, String> {
-    let cached: Option<OAuthToken> = read_secret("soundcloud.public_token")?
-        .map(|value| serde_json::from_str(&value).map_err(|error| format!("Saved SoundCloud search token is invalid: {error}")))
-        .transpose()?;
-    if let Some(token) = cached.as_ref().filter(|token| token.expires_at > now_seconds().saturating_add(60)) {
-        return Ok(token.access_token.clone());
-    }
-    let client_id = config_value("soundcloud", "client_id")?;
-    let client_secret = config_value("soundcloud", "client_secret")?;
-    if client_id.is_empty() || client_secret.is_empty() {
-        return Err("Add SoundCloud API app credentials in Settings → Integrations. Registration currently requires SoundCloud Artist Pro.".to_string());
-    }
-    if let Some(token) = cached {
-        if token.expires_at <= now_seconds().saturating_add(60) && token.refresh_token.is_some() {
-            return Ok(refresh_token("soundcloud", "soundcloud.public_token", &token)?.access_token);
-        }
-    }
-    let response = http_client()?
-        .post("https://secure.soundcloud.com/oauth/token")
-        .basic_auth(&client_id, Some(&client_secret))
-        .form(&[("grant_type", "client_credentials")])
-        .send()
-        .map_err(|error| format!("Could not authorize SoundCloud catalog search: {error}"))?;
-    let token = parse_token_response(response)?;
-    let serialized = serde_json::to_string(&token).map_err(|error| error.to_string())?;
-    write_secret("soundcloud.public_token", &serialized)?;
-    Ok(token.access_token)
-}
-
 fn response_json(response: Response) -> Result<Value, String> {
     let status = response.status();
-    let body = response.text().map_err(|error| format!("Could not read provider results: {error}"))?;
+    let body = response
+        .text()
+        .map_err(|error| format!("Could not read provider results: {error}"))?;
     if !status.is_success() {
         let message = if status.as_u16() == 429 {
             "The provider search limit was reached. Wait a little and try again.".to_string()
         } else {
-            format!("Provider search failed ({status}). Reconnect or check the API credentials in Settings.")
+            format!("Provider search failed ({status}). Reconnect your account or try again later.")
         };
         return Err(message);
     }
-    serde_json::from_str(&body).map_err(|error| format!("Provider returned invalid search results: {error}"))
+    serde_json::from_str(&body)
+        .map_err(|error| format!("Provider returned invalid search results: {error}"))
 }
 
 fn text_at(value: &Value, path: &str) -> Option<String> {
-    value.pointer(path).and_then(Value::as_str).map(str::to_string)
+    value
+        .pointer(path)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn query_for(query: &str, live: bool) -> String {
@@ -505,17 +620,8 @@ fn query_for(query: &str, live: bool) -> String {
 }
 
 fn search_youtube(query: &str, live: bool) -> Result<Vec<ProviderSearchResult>, String> {
-    let api_key = config_value("youtube", "api_key")?;
-    let token = load_user_token("youtube")?;
-    let token = match token {
-        Some(token) if token.expires_at > now_seconds().saturating_add(60) => Some(token.access_token),
-        Some(token) => Some(refresh_token("youtube", "youtube.user_token", &token)?.access_token),
-        None => None,
-    };
-    if api_key.is_empty() && token.is_none() {
-        return Err("Add a YouTube Data API key or connect Google in Settings → Integrations to search videos.".to_string());
-    }
-    let mut request = http_client()?
+    let token = current_user_access_token("youtube")?;
+    let response = http_client()?
         .get("https://www.googleapis.com/youtube/v3/search")
         .query(&[
             ("part", "snippet"),
@@ -523,21 +629,22 @@ fn search_youtube(query: &str, live: bool) -> Result<Vec<ProviderSearchResult>, 
             ("videoEmbeddable", "true"),
             ("maxResults", "20"),
             ("q", query_for(query, live).as_str()),
-        ]);
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
-    } else {
-        request = request.query(&[("key", api_key.as_str())]);
-    }
-    let response = request.send().map_err(|error| format!("Could not search YouTube: {error}"))?;
+        ])
+        .bearer_auth(token)
+        .send()
+        .map_err(|error| format!("Could not search YouTube: {error}"))?;
     let data = response_json(response)?;
-    let items = data.get("items").and_then(Value::as_array).ok_or_else(|| "YouTube returned no searchable videos.".to_string())?;
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "YouTube returned no searchable videos.".to_string())?;
     Ok(items
         .iter()
         .filter_map(|item| {
             let id = text_at(item, "/id/videoId")?;
             let title = text_at(item, "/snippet/title")?;
-            let artist = text_at(item, "/snippet/channelTitle").unwrap_or_else(|| "YouTube channel".to_string());
+            let artist = text_at(item, "/snippet/channelTitle")
+                .unwrap_or_else(|| "YouTube channel".to_string());
             let artwork_url = text_at(item, "/snippet/thumbnails/high/url")
                 .or_else(|| text_at(item, "/snippet/thumbnails/medium/url"));
             Some(ProviderSearchResult {
@@ -549,7 +656,9 @@ fn search_youtube(query: &str, live: bool) -> Result<Vec<ProviderSearchResult>, 
                 duration_seconds: None,
                 artwork_url,
                 external_url: format!("https://www.youtube.com/watch?v={id}"),
-                embed_url: Some(format!("https://www.youtube-nocookie.com/embed/{id}?playsinline=1")),
+                embed_url: Some(format!(
+                    "https://www.youtube-nocookie.com/embed/{id}?playsinline=1"
+                )),
                 explicit: None,
             })
         })
@@ -557,11 +666,7 @@ fn search_youtube(query: &str, live: bool) -> Result<Vec<ProviderSearchResult>, 
 }
 
 fn search_soundcloud(query: &str, live: bool) -> Result<Vec<ProviderSearchResult>, String> {
-    let token = if load_user_token("soundcloud")?.is_some() {
-        current_user_access_token("soundcloud")?
-    } else {
-        soundcloud_public_access_token()?
-    };
+    let token = current_user_access_token("soundcloud")?;
     let response = http_client()?
         .get("https://api.soundcloud.com/tracks")
         .header("Authorization", format!("OAuth {token}"))
@@ -574,13 +679,22 @@ fn search_soundcloud(query: &str, live: bool) -> Result<Vec<ProviderSearchResult
         .send()
         .map_err(|error| format!("Could not search SoundCloud: {error}"))?;
     let data = response_json(response)?;
-    let items = data.as_array().or_else(|| data.get("collection").and_then(Value::as_array)).ok_or_else(|| "SoundCloud returned no track results.".to_string())?;
+    let items = data
+        .as_array()
+        .or_else(|| data.get("collection").and_then(Value::as_array))
+        .ok_or_else(|| "SoundCloud returned no track results.".to_string())?;
     Ok(items
         .iter()
         .filter_map(|item| {
-            let id = item.get("id").map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()))?;
+            let id = item.get("id").map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| value.to_string())
+            })?;
             let title = text_at(item, "/title")?;
-            let artist = text_at(item, "/user/username").unwrap_or_else(|| "SoundCloud artist".to_string());
+            let artist =
+                text_at(item, "/user/username").unwrap_or_else(|| "SoundCloud artist".to_string());
             let external_url = text_at(item, "/permalink_url")?;
             Some(ProviderSearchResult {
                 provider: "soundcloud".to_string(),
@@ -588,7 +702,10 @@ fn search_soundcloud(query: &str, live: bool) -> Result<Vec<ProviderSearchResult
                 title,
                 artist,
                 album: None,
-                duration_seconds: item.get("duration").and_then(Value::as_u64).map(|value| value / 1000),
+                duration_seconds: item
+                    .get("duration")
+                    .and_then(Value::as_u64)
+                    .map(|value| value / 1000),
                 artwork_url: text_at(item, "/artwork_url"),
                 external_url,
                 embed_url: None,
@@ -598,13 +715,18 @@ fn search_soundcloud(query: &str, live: bool) -> Result<Vec<ProviderSearchResult
         .collect())
 }
 
-pub fn search(provider: &str, query: &str, live: bool) -> Result<Vec<ProviderSearchResult>, String> {
+pub fn search(
+    provider: &str,
+    query: &str,
+    live: bool,
+) -> Result<Vec<ProviderSearchResult>, String> {
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
     match valid_provider(provider)? {
         "youtube" => search_youtube(query, live),
         "soundcloud" => search_soundcloud(query, live),
+        "spotify" => Err("Spotify catalog search is handled on Spotify.".to_string()),
         _ => Err("Unknown music provider.".to_string()),
     }
 }
@@ -612,9 +734,16 @@ pub fn search(provider: &str, query: &str, live: bool) -> Result<Vec<ProviderSea
 pub fn open_provider_url(app: &tauri::AppHandle, raw_url: &str) -> Result<(), String> {
     let url = Url::parse(raw_url).map_err(|_| "This provider link is invalid.".to_string())?;
     let host = url.host_str().unwrap_or_default();
-    let allowed = ["youtube.com", "youtube-nocookie.com", "youtu.be", "soundcloud.com", "spotify.com", "google.com"]
-        .iter()
-        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
+    let allowed = [
+        "youtube.com",
+        "youtube-nocookie.com",
+        "youtu.be",
+        "soundcloud.com",
+        "spotify.com",
+        "google.com",
+    ]
+    .iter()
+    .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
     if url.scheme() != "https" || !allowed {
         return Err("Viviette can only open verified music provider links.".to_string());
     }
