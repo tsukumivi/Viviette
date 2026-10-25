@@ -27,4 +27,19 @@ jobs:
           workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Check Rust backend
+        shell: pwsh
+        run: |
+          $cargoOutput = & cargo check --manifest-path src-tauri/Cargo.toml --message-format=short 2>&1
+          $cargoExitCode = $LASTEXITCODE
+          $cargoOutput | ForEach-Object { Write-Output $_ }
+          if ($cargoExitCode -ne 0) {
+            $cargoOutput |
+              Where-Object { $_.ToString() -match '(?i)(^|\s)error(?:\[[^\]]+\])?:|failed to' } |
+              Select-Object -First 12 |
+              ForEach-Object {
+                $message = $_.ToString().Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Output "::error::$message"
+              }
+          }
+          exit $cargoExitCode
