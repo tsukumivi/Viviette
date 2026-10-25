@@ -14,7 +14,8 @@ The NSIS installer is configured for the current Windows user and does not ask f
 
 ## Working in this checkout
 
-- Hidden-by-default navigation, persistent top search, responsive dark interface, and compact pinned playback bar.
+- Compact Riff-inspired left rail with Discover, Liked Songs, and Settings; a persistent search field and YouTube, SoundCloud, and Live Performances source selector sit beside it. The source choice is saved locally; provider playback is not connected yet.
+- Responsive dark interface and compact pinned playback bar. The Settings page uses a compact section rail and grouped rows for the integrations and playback controls that exist today.
 - Import local audio into an IndexedDB library. Likes and playlist track references persist locally; duplicate playlist entries are prevented.
 - Play, pause, seek, volume, shuffle, previous/next, and repeat off / queue / current track are wired to local playback. Repeat is free.
 - The bottom-left controls provide like, playlist, and download actions. Download feedback explains that Viviette will export MP3 only when a connected source explicitly authorizes it.
@@ -68,3 +69,5 @@ Push a tag such as `v0.1.0` to create the GitHub release. The workflow emits `Vi
 ## Notes
 
 `pnpm-workspace.yaml` explicitly permits the esbuild install script because Vite needs its platform binary to build. No provider passwords, tokens, or API secrets are stored in frontend code.
+
+Viviette adapts Riff's inline SVG icon artwork from [rootscripts/riff](https://github.com/rootscripts/riff), licensed under the MIT License. The copyright and license notice is included in `RIFF-LICENSE.txt` and bundled with the app as `RIFF-LICENSE.txt`.
