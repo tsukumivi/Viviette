@@ -35,11 +35,11 @@ jobs:
           $cargoOutput | ForEach-Object { Write-Output $_ }
           if ($cargoExitCode -ne 0) {
             $cargoOutput |
-              Where-Object { $_.ToString() -match '(?i)(^|\s)error(?:\[[^\]]+\])?:|failed to' } |
-              Select-Object -First 12 |
+              Select-Object -Last 24 |
               ForEach-Object {
-                $message = $_.ToString().Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-                Write-Output "::error::$message"
+                $message = $_.ToString() -replace '\x1b\[[0-9;]*[A-Za-z]', ''
+                $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Output "::error title=Rust backend diagnostic::$message"
               }
           }
           exit $cargoExitCode
