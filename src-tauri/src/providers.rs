@@ -77,6 +77,7 @@ fn valid_provider(provider: &str) -> Result<&'static str, String> {
     match provider {
         "youtube" => Ok("youtube"),
         "soundcloud" => Ok("soundcloud"),
+        "spotify" => Ok("spotify"),
         _ => Err("Unknown music provider.".to_string()),
     }
 }
@@ -130,6 +131,9 @@ pub fn save_config(config: ProviderConfigInput) -> Result<(), String> {
         "soundcloud" if next_client_id.is_empty() || next_client_secret.is_empty() => {
             return Err("Add both SoundCloud API app credentials before saving.".to_string());
         }
+        "spotify" if next_client_id.is_empty() => {
+            return Err("Add your Spotify app Client ID before saving.".to_string());
+        }
         _ => {}
     }
 
@@ -148,7 +152,7 @@ pub fn save_config(config: ProviderConfigInput) -> Result<(), String> {
 pub fn status() -> Result<Vec<ProviderStatus>, String> {
     let mut results = Vec::new();
     for provider in ["youtube", "soundcloud", "spotify"] {
-        let connected = provider != "spotify" && read_secret(&format!("{provider}.user_token"))?.is_some();
+        let connected = read_secret(&format!("{provider}.user_token"))?.is_some();
         let (configured, connectable, detail) = match provider {
             "youtube" => {
                 let has_key = !config_value(provider, "api_key")?.is_empty();
@@ -185,7 +189,21 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
                     },
                 )
             }
-            _ => (false, false, "Spotify search opens on Spotify's own site".to_string()),
+            "spotify" => {
+                let configured = !config_value(provider, "client_id")?.is_empty();
+                (
+                    configured,
+                    configured,
+                    if connected {
+                        "Spotify account connected · search stays on Spotify".to_string()
+                    } else if configured {
+                        "Spotify app configured · ready to sign in".to_string()
+                    } else {
+                        "Add a Spotify app Client ID in Settings".to_string()
+                    },
+                )
+            }
+            _ => (false, false, "Unknown provider".to_string()),
         };
         results.push(ProviderStatus {
             provider: provider.to_string(),
@@ -200,7 +218,7 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
 
 fn http_client() -> Result<Client, String> {
     Client::builder()
-        .user_agent("Viviette/0.1.2 provider search")
+        .user_agent("Viviette/0.1.5 provider integration")
         .timeout(Duration::from_secs(18))
         .build()
         .map_err(|error| format!("Could not initialize provider networking: {error}"))
@@ -210,6 +228,7 @@ fn oauth_url(provider: &str, client_id: &str, challenge: &str, state: &str) -> R
     let base = match provider {
         "youtube" => "https://accounts.google.com/o/oauth2/v2/auth",
         "soundcloud" => "https://secure.soundcloud.com/authorize",
+        "spotify" => "https://accounts.spotify.com/authorize",
         _ => return Err("Unknown music provider.".to_string()),
     };
     let mut url = Url::parse(base).map_err(|error| error.to_string())?;
@@ -307,6 +326,7 @@ fn exchange_code(provider: &str, code: &str, verifier: &str, client_id: &str, cl
     let endpoint = match provider {
         "youtube" => "https://oauth2.googleapis.com/token",
         "soundcloud" => "https://secure.soundcloud.com/oauth/token",
+        "spotify" => "https://accounts.spotify.com/api/token",
         _ => return Err("Unknown music provider.".to_string()),
     };
     let mut fields = vec![
@@ -316,7 +336,9 @@ fn exchange_code(provider: &str, code: &str, verifier: &str, client_id: &str, cl
         ("redirect_uri", OAUTH_REDIRECT_URI.to_string()),
         ("code_verifier", verifier.to_string()),
     ];
-    fields.push(("client_secret", client_secret.to_string()));
+    if provider != "spotify" {
+        fields.push(("client_secret", client_secret.to_string()));
+    }
     let response = http_client()?
         .post(endpoint)
         .form(&fields)
@@ -349,7 +371,7 @@ pub fn connect(app: &tauri::AppHandle, provider: &str) -> Result<String, String>
     if client_id.is_empty() {
         return Err(format!("Add the {provider} app Client ID in Settings → Integrations first."));
     }
-    if client_secret.is_empty() {
+    if client_secret.is_empty() && provider != "spotify" {
         return Err(format!("Add the {provider} app Client Secret in Settings → Integrations first."));
     }
     let listener = TcpListener::bind(("127.0.0.1", OAUTH_PORT))
@@ -367,6 +389,7 @@ pub fn connect(app: &tauri::AppHandle, provider: &str) -> Result<String, String>
     Ok(match provider {
         "youtube" => "Google account connected. Public video search remains available with your API key.".to_string(),
         "soundcloud" => "SoundCloud account connected.".to_string(),
+        "spotify" => "Spotify account connected. Spotify catalog search and playback stay on Spotify.".to_string(),
         _ => "Account connected.".to_string(),
     })
 }
@@ -394,17 +417,20 @@ fn refresh_token(provider: &str, token_key: &str, previous: &OAuthToken) -> Resu
     let refresh = previous.refresh_token.as_deref().ok_or_else(|| "Your provider session expired. Connect the account again.".to_string())?;
     let client_id = config_value(provider, "client_id")?;
     let client_secret = config_value(provider, "client_secret")?;
-    let endpoint = if provider == "youtube" {
-        "https://oauth2.googleapis.com/token"
-    } else {
-        "https://secure.soundcloud.com/oauth/token"
+    let endpoint = match provider {
+        "youtube" => "https://oauth2.googleapis.com/token",
+        "soundcloud" => "https://secure.soundcloud.com/oauth/token",
+        "spotify" => "https://accounts.spotify.com/api/token",
+        _ => return Err("Unknown music provider.".to_string()),
     };
     let mut fields = vec![
         ("grant_type", "refresh_token".to_string()),
         ("client_id", client_id),
         ("refresh_token", refresh.to_string()),
     ];
-    fields.push(("client_secret", client_secret));
+    if provider != "spotify" {
+        fields.push(("client_secret", client_secret));
+    }
     let mut next = parse_token_response(http_client()?.post(endpoint).form(&fields).send().map_err(|error| format!("Could not refresh provider authorization: {error}"))?)?;
     if next.refresh_token.is_none() {
         next.refresh_token = previous.refresh_token.clone();

@@ -291,7 +291,7 @@ const providerIntegrationCard = (provider: Provider): string => {
   const label = providerLabel(provider);
   const status = providerStatus(provider);
   if (provider === "spotify") {
-    return `<article class="setting-card provider-settings-card" id="provider-card-spotify"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-spotify"/></svg><span class="setting-copy"><strong>Spotify</strong><span>${escapeHtml(status.detail)}</span></span><span class="setting-state">External</span><div class="provider-form"><p class="provider-disclosure full">Spotify sign-in, search, and playback open on Spotify. Viviette does not collect Spotify passwords or display Spotify catalog results alongside other providers.</p><div class="provider-settings-actions"><button class="primary" type="button" data-provider-open-login>Sign in on Spotify</button><button type="button" data-provider-signup="spotify">Create Spotify account</button></div></div></article>`;
+    return `<article class="setting-card provider-settings-card" id="provider-card-spotify"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-spotify"/></svg><span class="setting-copy"><strong>Spotify</strong><span>${escapeHtml(status.detail)}</span></span><span class="setting-state">${status.connected ? "Connected" : status.configured ? "Ready to connect" : "Needs setup"}</span><div class="provider-form"><label class="full">Spotify app Client ID<input type="text" autocomplete="off" data-provider-field="clientId" placeholder="From the Spotify Developer Dashboard"></label><p class="provider-disclosure full">Create a Spotify app and add this OAuth redirect URI in its settings: <code>${OAUTH_CALLBACK_URI}</code>. Sign-in opens in your default browser and returns here. Viviette stores the authorization token in the operating-system credential store and never receives your Spotify password or client secret. Spotify catalog search and playback stay on Spotify.</p><div class="provider-settings-actions"><button type="button" data-provider-save="spotify">Save setup</button><button class="primary" type="button" data-provider-connect="spotify" ${status.connectable && !status.connected ? "" : "disabled"}>${status.connected ? "Connected" : "Connect Spotify"}</button><button type="button" data-provider-signup="spotify">Create Spotify account</button><button type="button" data-provider-console="spotify">Developer setup</button>${status.connected ? `<button type="button" data-provider-disconnect="spotify">Disconnect</button>` : ""}</div></div></article>`;
   }
   const configuredLabel = status.connected ? "Connected" : status.configured ? "Ready to connect" : "Needs setup";
   const fields = provider === "youtube"
@@ -310,7 +310,7 @@ const providerIntegrationCard = (provider: Provider): string => {
 const settingsMarkup = (): string => {
   const settingsRows = settingsSection === "playback" ? `
     <article class="setting-card audio-pause-setting"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-audio-output"/></svg><span class="setting-copy"><strong>Pause on audio output change</strong><span>Pauses connected playback when Windows changes or loses the default output, including a Bluetooth headset disconnect.</span></span><span class="setting-state" id="audioOutputState">${audioOutputMonitorSupported ? (pauseOnOutputDisconnect ? "On" : "Off") : "Desktop only"}</span><label class="setting-switch" title="Pause playback when the default audio output disconnects"><input id="pauseOnOutputDisconnect" type="checkbox" aria-label="Pause playback when audio output disconnects" ${pauseOnOutputDisconnect ? "checked" : ""} ${audioOutputMonitorSupported ? "" : "disabled"}><span aria-hidden="true"></span></label></article>` : `
-    <p class="provider-note">YouTube and SoundCloud use provider authorization. Spotify search and sign-in open on Spotify. Live Performances is a search filter, not a separate service.</p>
+    <p class="provider-note">YouTube, SoundCloud, and Spotify sign-in use provider authorization in your browser. Catalog search and playback stay with each provider. Live Performances is a search filter, not a separate service.</p>
     ${providerIntegrationCard("youtube")}
     ${providerIntegrationCard("soundcloud")}
     ${providerIntegrationCard("spotify")}
@@ -345,20 +345,16 @@ const openProviderDialog = (provider: Provider): void => {
   const accountExplain = provider === "youtube"
     ? "YouTube accounts use Google. Search can use a YouTube Data API key or a Google account you authorize in the browser."
     : provider === "spotify"
-      ? "Spotify search and playback open on Spotify. Its catalog stays separate from Viviette’s other providers."
+      ? "Spotify authorization opens in your browser and returns to Viviette after approval. Search and playback remain on Spotify."
       : "Connect your SoundCloud account through SoundCloud’s own sign-in page. Public search still needs the registered app credentials.";
   const status = providerStatus(provider);
-  const connectAction = provider === "spotify"
-    ? `<button class="primary" type="button" data-provider-open-login>Sign in on Spotify</button>`
-    : status.connected
+  const connectAction = status.connected
     ? `<button class="primary" type="button" disabled>Connected</button>`
     : status.connectable
       ? `<button class="primary" type="button" data-provider-connect="${provider}">Continue with ${provider === "youtube" ? "Google" : label}</button>`
       : `<button type="button" data-provider-settings="${provider}">Set up provider credentials</button>`;
-  const signInNote = provider === "spotify"
-    ? "Spotify handles its own sign-in in your default browser. Viviette never receives your password."
-    : "Viviette never receives your provider password. Sign-in opens in your default browser and asks the provider to authorize Viviette.";
-  providerDialogBody.innerHTML = `<div class="dialog-kicker">${label.toLocaleUpperCase()} ACCOUNT</div><h2 id="providerDialogTitle">${provider === "spotify" ? "Open Spotify" : `Connect ${label}`}</h2><p>${accountExplain}</p><p>${signInNote}</p><div class="provider-connect-actions">${connectAction}<button type="button" data-provider-signup="${provider}">${signupLabel}</button>${status.configured && provider !== "spotify" ? `<button type="button" data-provider-continue-search>Continue without signing in</button>` : ""}</div><div class="provider-dialog-foot"><button type="button" data-provider-dialog-close>Cancel</button></div>`;
+  const signInNote = "Viviette never receives your provider password. Sign-in opens in your default browser and returns to the app after authorization.";
+  providerDialogBody.innerHTML = `<div class="dialog-kicker">${label.toLocaleUpperCase()} ACCOUNT</div><h2 id="providerDialogTitle">Connect ${label}</h2><p>${accountExplain}</p><p>${signInNote}</p><div class="provider-connect-actions">${connectAction}<button type="button" data-provider-signup="${provider}">${signupLabel}</button>${status.configured && provider !== "spotify" ? `<button type="button" data-provider-continue-search>Continue without signing in</button>` : ""}</div><div class="provider-dialog-foot"><button type="button" data-provider-dialog-close>Cancel</button></div>`;
   if (!providerDialog.open) providerDialog.showModal();
 };
 
@@ -375,10 +371,6 @@ const refreshProviderStatuses = async (): Promise<void> => {
 const openProviderUrl = async (url: string): Promise<void> => {
   if (isTauri()) await invoke("open_provider_url", { url });
   else window.open(url, "_blank", "noopener,noreferrer");
-};
-
-const openSpotifySignIn = async (): Promise<void> => {
-  await openProviderUrl("https://accounts.spotify.com/login");
 };
 
 const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElement): Promise<void> => {
@@ -839,10 +831,6 @@ providerDialogBody.addEventListener("click", (event: MouseEvent) => {
     void connectProvider(connect.dataset.providerConnect as Provider, connect);
     return;
   }
-  if (target.closest("[data-provider-open-login]")) {
-    void openSpotifySignIn().then(() => providerDialog.close()).catch((error) => announce(String(error)));
-    return;
-  }
   const signup = target.closest<HTMLButtonElement>("[data-provider-signup]");
   if (signup?.dataset.providerSignup) {
     const provider = signup.dataset.providerSignup as Provider;
@@ -888,10 +876,6 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
   const settingsFor = target.closest<HTMLElement>("[data-provider-settings]")?.dataset.providerSettings;
   if (settingsFor === "youtube" || settingsFor === "soundcloud" || settingsFor === "spotify") {
     openProviderSettings(settingsFor);
-    return;
-  }
-  if (target.closest("[data-provider-open-login]")) {
-    void openSpotifySignIn().catch((error) => announce(String(error)));
     return;
   }
   if (target.closest("[data-provider-search-external]")) {
