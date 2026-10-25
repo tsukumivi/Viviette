@@ -17,6 +17,7 @@ The NSIS installer is configured for the current Windows user and does not ask f
 - Compact Riff-inspired left rail with Discover, Liked Songs, and Settings; a persistent search field and YouTube, SoundCloud, Live Performances, and Spotify source selector sit beside it.
 - Responsive dark interface and compact pinned playback bar. Settings uses a compact section rail with Integrations, Playback, and Accessibility sections. Accessibility zoom and font size persist between launches.
 - Import local audio into an IndexedDB library. Likes and playlist track references persist locally; duplicate playlist entries are prevented.
+- Transfer playlists you own or collaborate on from Spotify using Spotify's official playlist API. Viviette imports metadata only, then searches YouTube or SoundCloud; the first ten tracks receive suggested matches, remaining tracks can be matched on demand, and matches play in the provider's official player. Spotify track links remain visible for attribution.
 - Play, pause, seek, volume, shuffle, previous/next, and repeat off / queue / current track are wired to local playback. Repeat is free.
 - The bottom-left controls provide like, playlist, and download actions. Download feedback explains that Viviette will export MP3 only when a connected source explicitly authorizes it.
 - Windows Core Audio endpoint notifications can pause the active playback adapter when the default headset or output is removed. Notifications are event-driven; there is no output polling loop.
@@ -35,7 +36,7 @@ Provider OAuth apps still have to be registered by the Viviette maintainers. You
 
 - **YouTube:** Search is available only after Google authorization and uses the YouTube Data API. Results open in YouTube's visible official player with its standard controls and ads. Viviette does not extract audio, support background playback, or export MP3 from YouTube.
 - **SoundCloud:** SoundCloud OAuth uses PKCE and the desktop callback `viviette://soundcloud/callback`; Tauri deep links route it back to the running app. SoundCloud requires its client secret during code exchange, so the desktop app sends the exchange to the small HTTPS worker in `services/soundcloud-token-broker/`. The worker keeps the secret server-side and is never bundled with Viviette. Register the callback with SoundCloud, deploy the worker, then set the GitHub Actions variables `VIVIETTE_SOUNDCLOUD_CLIENT_ID` and `VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL` (the full HTTPS URL ending in `/oauth/token`). SoundCloud's current app registration requires Artist Pro; see [SoundCloud API app registration](https://developers.soundcloud.com/docs/api/register-app) and its [OAuth guide](https://developers.soundcloud.com/docs/api/guide).
-- **Spotify:** Login uses Authorization Code with PKCE in the system browser and the loopback callback `http://127.0.0.1:47619/callback`. Spotify search and playback remain on Spotify; its catalog is not combined with the other services. See the [Spotify PKCE guide](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow) and [redirect URI rules](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri).
+- **Spotify:** Login uses Authorization Code with PKCE in the system browser and the loopback callback `http://127.0.0.1:47619/callback`. Viviette requests `playlist-read-private` and `playlist-read-collaborative` to transfer playlist metadata with Spotify's official API. Current API access only returns playlist items for playlists the connected user owns or collaborates on. Spotify audio, previews, and artwork are not imported or played. Spotify policy explicitly permits transfer of playlist metadata as a migration use case, but API eligibility, test-user allowlisting, and Spotify's review can still restrict access. Existing Spotify connections must select **Update playlist access** in Settings to grant the added scopes. See the [Spotify PKCE guide](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow), [playlist items API](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items), [scope documentation](https://developer.spotify.com/documentation/web-api/concepts/scopes), and [Developer Policy](https://developer.spotify.com/policy).
 - **Live Performances** adds concert-recording terms to the selected provider's search. It is a filter, not a separate service, and it requires signing in to the selected provider.
 
 ### Configure provider sign-in for a release
@@ -60,7 +61,7 @@ The two `wrangler secret put` commands prompt securely; neither value goes into 
 
 Once all desired provider variables are saved and the SoundCloud worker is deployed, pushing a new `v*` tag builds a fresh installer. Existing releases do not change when variables are added.
 
-OAuth uses the normal system browser because providers such as Google prohibit login inside an app-controlled embedded browser. YouTube and SoundCloud playback use their official players; provider playback is not yet linked to Viviette's bottom player or Discord presence. Spotify search and playback open on Spotify. The bottom bar and pause-aware Rich Presence currently control imported local tracks. No authorized MP3 export is available from these search providers. Viviette does not scrape streams, extract protected audio, bypass DRM, or convert lossy audio to FLAC.
+OAuth uses the normal system browser because providers such as Google prohibit login inside an app-controlled embedded browser. YouTube and SoundCloud playback use their official players; provider playback is not yet linked to Viviette's bottom player or Discord presence. Spotify search opens on Spotify, while the playlist transfer only reads metadata and resolves matches against the selected provider. Disconnecting Spotify removes imported Spotify playlists from Viviette. The bottom bar and pause-aware Rich Presence currently control imported local tracks. No authorized MP3 export is available from these search providers. Viviette does not scrape streams, extract protected audio, bypass DRM, or convert lossy audio to FLAC.
 
 Discord needs an Application ID created in the Developer Portal. Discord currently restricts RPC access for unapproved applications to listed testers, so general availability may require approval or tester enrollment. Discord documents native RPC over IPC and recommends its Social SDK for new game social integrations; Viviette uses a community Rust crate for the IPC transport. Local album artwork is not published to Discord; a provider-supplied public HTTPS artwork URL can be passed by a future provider adapter. Discord connection state is observable in Settings when that page is open. Presence data includes the current title and artist only while the setting is enabled.
 
@@ -87,7 +88,7 @@ Create a Windows setup executable with:
 pnpm tauri build --bundles nsis
 ```
 
-Push a tag such as `v0.1.9` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
+Push a tag such as `v0.1.10` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
 
 ## Architecture
 
@@ -96,7 +97,7 @@ Push a tag such as `v0.1.9` to create the GitHub release. The workflow emits `Vi
 - `src/playback/adapter.ts`: provider-neutral playback controls used by device-loss handling.
 - `src-tauri/src/audio_output.rs`: Windows Core Audio device-change events.
 - `src-tauri/src/discord_presence.rs`: dedicated Discord IPC worker with pause-aware timestamps.
-- `src-tauri/src/providers.rs`: provider search, browser-based OAuth with PKCE, provider playback URLs, and OS credential-store access.
+- `src-tauri/src/providers.rs`: provider search, Spotify playlist metadata import, browser-based OAuth with PKCE, provider playback URLs, and OS credential-store access.
 - `src-tauri/src/lib.rs`: Tauri command registration.
 - `.github/workflows`: frontend/native verification and tagged Windows packaging.
 

@@ -50,6 +50,27 @@ pub struct ProviderSearchResult {
     explicit: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotifyPlaylistImport {
+    name: String,
+    spotify_url: String,
+    tracks: Vec<SpotifyPlaylistTrack>,
+    total_tracks: u64,
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotifyPlaylistTrack {
+    spotify_id: Option<String>,
+    title: String,
+    artist: String,
+    album: Option<String>,
+    duration_seconds: Option<u64>,
+    spotify_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OAuthToken {
@@ -179,7 +200,7 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
                     if connected {
                         "Spotify account connected".to_string()
                     } else if configured {
-                        "Log in to Spotify to search its catalog".to_string()
+                        "Log in to Spotify to import your playlists".to_string()
                     } else {
                         "Spotify sign-in is not configured for this build".to_string()
                     },
@@ -250,6 +271,11 @@ fn oauth_url(
                     .append_pair("scope", "https://www.googleapis.com/auth/youtube.readonly")
                     .append_pair("access_type", "offline")
                     .append_pair("prompt", "select_account");
+            }
+            "spotify" => {
+                query
+                    .append_pair("scope", "playlist-read-private playlist-read-collaborative")
+                    .append_pair("show_dialog", "true");
             }
             _ => {}
         }
@@ -559,8 +585,7 @@ pub fn connect(app: &tauri::AppHandle, provider: &str) -> Result<String, String>
         "youtube" => "Google account connected. YouTube search is ready.".to_string(),
         "soundcloud" => "SoundCloud account connected.".to_string(),
         "spotify" => {
-            "Spotify account connected. Spotify catalog search and playback stay on Spotify."
-                .to_string()
+            "Spotify account connected. Playlist import is ready.".to_string()
         }
         _ => "Account connected.".to_string(),
     })
@@ -665,6 +690,162 @@ fn current_user_access_token(provider: &str) -> Result<String, String> {
         token
     };
     Ok(token.access_token)
+}
+
+fn spotify_playlist_id(raw_url: &str) -> Result<String, String> {
+    let url = Url::parse(raw_url.trim()).map_err(|_| {
+        "Paste a full Spotify playlist link, such as https://open.spotify.com/playlist/…"
+            .to_string()
+    })?;
+    if url.scheme() != "https" || url.host_str() != Some("open.spotify.com") {
+        return Err("Only full https://open.spotify.com playlist links are supported.".to_string());
+    }
+    let segments: Vec<_> = url
+        .path_segments()
+        .ok_or_else(|| "That Spotify link does not contain a playlist path.".to_string())?
+        .collect();
+    let Some(index) = segments.iter().position(|segment| *segment == "playlist") else {
+        return Err(
+            "That Spotify link is not a playlist. Open the playlist in Spotify and copy its link."
+                .to_string(),
+        );
+    };
+    let Some(id) = segments.get(index + 1) else {
+        return Err("The Spotify playlist link is missing its playlist ID.".to_string());
+    };
+    if id.len() != 22 || !id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err("The Spotify playlist ID in that link is invalid.".to_string());
+    }
+    Ok((*id).to_string())
+}
+
+fn spotify_api_json(response: Response) -> Result<Value, String> {
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("Could not read Spotify playlist data: {error}"))?;
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 => {
+                "Spotify authorization expired. Log in to Spotify again and grant playlist access."
+                    .to_string()
+            }
+            403 => "Spotify denied playlist access. Make sure you own or collaborate on this playlist, your account is allowlisted in Spotify Development Mode, and Viviette has playlist-read-private permission. You can update playlist access in Settings.".to_string(),
+            404 => {
+                "Spotify could not find that playlist. Check the link and make sure the playlist is available to your account."
+                    .to_string()
+            }
+            429 => {
+                "Spotify's playlist API is rate-limiting requests. Wait a moment and try again."
+                    .to_string()
+            }
+            _ => format!("Spotify playlist import failed ({status}). Try again later."),
+        });
+    }
+    serde_json::from_str(&body)
+        .map_err(|error| format!("Spotify returned invalid playlist data: {error}"))
+}
+
+/// Imports only playlist metadata via Spotify's official Web API. No audio,
+/// preview URLs, or artwork are requested or stored.
+pub fn import_spotify_playlist(raw_url: &str) -> Result<SpotifyPlaylistImport, String> {
+    let playlist_id = spotify_playlist_id(raw_url)?;
+    let token = current_user_access_token("spotify").map_err(|_| {
+        "Connect Spotify first, then import a playlist you own or collaborate on.".to_string()
+    })?;
+    let client = http_client()?;
+    let playlist_url = format!("https://api.spotify.com/v1/playlists/{playlist_id}");
+    let playlist = spotify_api_json(
+        client
+            .get(&playlist_url)
+            .query(&[("fields", "name,external_urls")])
+            .bearer_auth(&token)
+            .send()
+            .map_err(|error| format!("Could not contact Spotify: {error}"))?,
+    )?;
+    let name = text_at(&playlist, "/name")
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Spotify playlist".to_string());
+    let spotify_url = text_at(&playlist, "/external_urls/spotify")
+        .unwrap_or_else(|| format!("https://open.spotify.com/playlist/{playlist_id}"));
+    let items_url = format!("https://api.spotify.com/v1/playlists/{playlist_id}/items");
+    const MAX_IMPORTED_ITEMS: u64 = 1000;
+    let mut offset = 0_u64;
+    let mut total_tracks = 0_u64;
+    let mut tracks = Vec::new();
+    loop {
+        if offset >= MAX_IMPORTED_ITEMS || (offset > 0 && offset >= total_tracks) {
+            break;
+        }
+        let offset_text = offset.to_string();
+        let page = spotify_api_json(
+            client
+                .get(&items_url)
+                .query(&[("limit", "50"), ("offset", offset_text.as_str())])
+                .bearer_auth(&token)
+                .send()
+                .map_err(|error| format!("Could not load Spotify playlist tracks: {error}"))?,
+        )?;
+        total_tracks = page.get("total").and_then(Value::as_u64).unwrap_or(total_tracks);
+        let Some(items) = page.get("items").and_then(Value::as_array) else {
+            return Err("Spotify returned an invalid playlist track page.".to_string());
+        };
+        if items.is_empty() {
+            break;
+        }
+        for entry in items {
+            if entry.get("is_local").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            let item = entry.get("item").or_else(|| entry.get("track"));
+            let Some(item) = item.filter(|item| {
+                item.get("type").and_then(Value::as_str).unwrap_or("track") == "track"
+            }) else {
+                continue;
+            };
+            let Some(title) = text_at(item, "/name").filter(|title| !title.trim().is_empty())
+            else {
+                continue;
+            };
+            let artist = item
+                .get("artists")
+                .and_then(Value::as_array)
+                .map(|artists| {
+                    artists
+                        .iter()
+                        .filter_map(|artist| artist.get("name").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|artist| !artist.is_empty())
+                .unwrap_or_else(|| "Unknown artist".to_string());
+            let spotify_id = text_at(item, "/id");
+            let track_url = text_at(item, "/external_urls/spotify").or_else(|| {
+                spotify_id
+                    .as_ref()
+                    .map(|id| format!("https://open.spotify.com/track/{id}"))
+            });
+            tracks.push(SpotifyPlaylistTrack {
+                spotify_id,
+                title,
+                artist,
+                album: text_at(item, "/album/name"),
+                duration_seconds: item
+                    .get("duration_ms")
+                    .and_then(Value::as_u64)
+                    .map(|ms| ms.saturating_add(500) / 1000),
+                spotify_url: track_url,
+            });
+        }
+        offset += items.len() as u64;
+    }
+    Ok(SpotifyPlaylistImport {
+        name,
+        spotify_url,
+        tracks,
+        total_tracks,
+        truncated: total_tracks > MAX_IMPORTED_ITEMS,
+    })
 }
 
 fn response_json(response: Response) -> Result<Value, String> {

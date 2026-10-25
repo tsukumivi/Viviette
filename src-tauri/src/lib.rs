@@ -4,7 +4,7 @@ mod discord_presence;
 mod providers;
 
 use discord_presence::{PresenceService, PresenceUpdate};
-use providers::{ProviderSearchResult, ProviderStatus};
+use providers::{ProviderSearchResult, ProviderStatus, SpotifyPlaylistImport};
 use tauri::{Manager, State};
 
 #[tauri::command]
@@ -56,6 +56,13 @@ async fn provider_search(
 }
 
 #[tauri::command]
+async fn spotify_import_playlist(playlist_url: String) -> Result<SpotifyPlaylistImport, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::import_spotify_playlist(&playlist_url))
+        .await
+        .map_err(|error| format!("Spotify playlist import could not finish: {error}"))?
+}
+
+#[tauri::command]
 fn open_provider_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     providers::open_provider_url(&app, &url)
 }
@@ -89,6 +96,7 @@ pub fn run() {
             provider_connect,
             provider_disconnect,
             provider_search,
+            spotify_import_playlist,
             open_provider_url
         ])
         .run(tauri::generate_context!())

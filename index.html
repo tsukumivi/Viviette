@@ -131,6 +131,22 @@
         <div id="providerDialogBody"></div>
       </dialog>
 
+      <dialog class="create-dialog spotify-import-dialog" id="spotifyImportDialog" aria-labelledby="spotifyImportTitle">
+        <form id="spotifyImportForm">
+          <div class="dialog-kicker">PLAYLIST TRANSFER</div>
+          <h2 id="spotifyImportTitle">Import from Spotify</h2>
+          <p class="provider-note">Paste a playlist you own or collaborate on. Viviette transfers track metadata only, then searches the provider you choose. Audio stays in that provider’s official player.</p>
+          <label for="spotifyPlaylistUrl">Spotify playlist link</label>
+          <input id="spotifyPlaylistUrl" name="spotifyPlaylistUrl" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="url" required>
+          <label for="spotifyImportProvider">Find tracks on</label>
+          <select id="spotifyImportProvider" name="spotifyImportProvider">
+            <option value="youtube">YouTube</option>
+            <option value="soundcloud">SoundCloud</option>
+          </select>
+          <div class="dialog-actions"><button class="button-quiet" id="cancelSpotifyImport" type="button">Cancel</button><button class="button-primary" type="submit">Import playlist</button></div>
+        </form>
+      </dialog>
+
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
       <input id="audioFiles" type="file" accept="audio/*,.flac,.wav,.opus,.aac,.alac,.dsf,.dff,.mp3" multiple hidden>
       <audio id="audioElement" preload="metadata"></audio>

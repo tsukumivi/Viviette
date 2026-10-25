@@ -9,10 +9,26 @@ type Page = "home" | "browse" | "library" | "playlists" | "liked" | "settings";
 
 type Track = LibraryTrack;
 
+type MatchProvider = "youtube" | "soundcloud";
+type ImportedSpotifyTrack = {
+  spotifyId: string | null;
+  title: string;
+  artist: string;
+  album: string | null;
+  durationSeconds: number | null;
+  spotifyUrl: string | null;
+  match: ProviderResult | null;
+  matchStatus: "pending" | "matched" | "not-found" | "error";
+};
+
 type Playlist = {
   id: string;
   name: string;
   trackIds: string[];
+  spotifyPlaylistUrl?: string;
+  targetProvider?: MatchProvider;
+  spotifyTotalTracks?: number;
+  importedTracks?: ImportedSpotifyTrack[];
 };
 
 type Provider = "youtube" | "soundcloud" | "spotify";
@@ -42,6 +58,10 @@ const trackMenu = document.querySelector<HTMLElement>("#trackMenu")!;
 const createDialog = document.querySelector<HTMLDialogElement>("#createDialog")!;
 const providerDialog = document.querySelector<HTMLDialogElement>("#providerDialog")!;
 const providerDialogBody = document.querySelector<HTMLElement>("#providerDialogBody")!;
+const spotifyImportDialog = document.querySelector<HTMLDialogElement>("#spotifyImportDialog")!;
+const spotifyImportForm = document.querySelector<HTMLFormElement>("#spotifyImportForm")!;
+const spotifyPlaylistUrlInput = document.querySelector<HTMLInputElement>("#spotifyPlaylistUrl")!;
+const spotifyImportProvider = document.querySelector<HTMLSelectElement>("#spotifyImportProvider")!;
 const createForm = document.querySelector<HTMLFormElement>("#createPlaylistForm")!;
 const playlistNameInput = document.querySelector<HTMLInputElement>("#playlistName")!;
 const toast = document.querySelector<HTMLElement>("#toast")!;
@@ -88,6 +108,36 @@ const readString = (key: string): string => {
   catch { return ""; }
 };
 
+const safeProviderResult = (value: unknown): ProviderResult | null => {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<ProviderResult>;
+  if ((item.provider !== "youtube" && item.provider !== "soundcloud") || typeof item.id !== "string" || typeof item.title !== "string" || typeof item.artist !== "string" || typeof item.externalUrl !== "string") return null;
+  try {
+    const external = new URL(item.externalUrl);
+    const allowedExternal = item.provider === "youtube"
+      ? ["youtube.com", "youtu.be"].some((host) => external.hostname === host || external.hostname.endsWith(`.${host}`))
+      : external.hostname === "soundcloud.com" || external.hostname.endsWith(".soundcloud.com");
+    if (external.protocol !== "https:" || !allowedExternal) return null;
+    if (item.embedUrl) {
+      const embed = new URL(item.embedUrl);
+      const allowedEmbed = item.provider === "youtube" && embed.hostname === "www.youtube-nocookie.com" && embed.pathname.startsWith("/embed/");
+      if (embed.protocol !== "https:" || !allowedEmbed) return null;
+    }
+  } catch { return null; }
+  return {
+    provider: item.provider,
+    id: item.id,
+    title: item.title.slice(0, 250),
+    artist: item.artist.slice(0, 250),
+    album: typeof item.album === "string" ? item.album.slice(0, 250) : null,
+    durationSeconds: typeof item.durationSeconds === "number" ? item.durationSeconds : null,
+    artworkUrl: typeof item.artworkUrl === "string" && item.artworkUrl.startsWith("https://") ? item.artworkUrl : null,
+    externalUrl: item.externalUrl,
+    embedUrl: typeof item.embedUrl === "string" ? item.embedUrl : null,
+    explicit: typeof item.explicit === "boolean" ? item.explicit : null,
+  };
+};
+
 const readPlaylists = (): Playlist[] => {
   try {
     const value: unknown = JSON.parse(localStorage.getItem("viviette.playlists.v1") ?? "[]");
@@ -96,10 +146,34 @@ const readPlaylists = (): Playlist[] => {
       if (!item || typeof item !== "object") return [];
       const candidate = item as Partial<Playlist>;
       if (typeof candidate.id !== "string" || typeof candidate.name !== "string" || !Array.isArray(candidate.trackIds)) return [];
+      const importedTracks: ImportedSpotifyTrack[] = Array.isArray(candidate.importedTracks)
+        ? candidate.importedTracks.flatMap((track: unknown): ImportedSpotifyTrack[] => {
+          if (!track || typeof track !== "object") return [];
+          const row = track as Partial<ImportedSpotifyTrack>;
+          if (typeof row.title !== "string" || typeof row.artist !== "string") return [];
+          const matchStatus = row.matchStatus === "not-found" || row.matchStatus === "error" ? row.matchStatus : "pending";
+          const match = safeProviderResult(row.match);
+          return [{
+            spotifyId: typeof row.spotifyId === "string" ? row.spotifyId : null,
+            title: row.title.slice(0, 250),
+            artist: row.artist.slice(0, 250),
+            album: typeof row.album === "string" ? row.album.slice(0, 250) : null,
+            durationSeconds: typeof row.durationSeconds === "number" ? row.durationSeconds : null,
+            spotifyUrl: typeof row.spotifyUrl === "string" && row.spotifyUrl.startsWith("https://open.spotify.com/track/") ? row.spotifyUrl : null,
+            match,
+            matchStatus: match ? "matched" : matchStatus,
+          }];
+        })
+        : [];
+      const sourceUrl = typeof candidate.spotifyPlaylistUrl === "string" && candidate.spotifyPlaylistUrl.startsWith("https://open.spotify.com/playlist/") ? candidate.spotifyPlaylistUrl : undefined;
       return [{
         id: candidate.id,
         name: candidate.name.slice(0, 48),
         trackIds: candidate.trackIds.filter((id): id is string => typeof id === "string"),
+        ...(sourceUrl ? { spotifyPlaylistUrl: sourceUrl } : {}),
+        ...(candidate.targetProvider === "youtube" || candidate.targetProvider === "soundcloud" ? { targetProvider: candidate.targetProvider } : {}),
+        ...(typeof candidate.spotifyTotalTracks === "number" ? { spotifyTotalTracks: candidate.spotifyTotalTracks } : {}),
+        ...(importedTracks.length ? { importedTracks } : {}),
       }];
     });
   } catch {
@@ -117,8 +191,14 @@ let providerResults: ProviderResult[] = [];
 let providerSearchError = "";
 let providerSearchPending = false;
 let activeProviderResult: ProviderResult | null = null;
+let activeProviderPlaylistId: string | null = null;
 let providerSearchTimer = 0;
 let providerSearchSequence = 0;
+let pendingSpotifyImport: { url: string; targetProvider: MatchProvider } | null = null;
+let pendingPlaylistMatchRequest: { playlistId: string; trackIndex: number } | null = null;
+let initialPlaylistMatching = false;
+const playlistMatchCandidates = new Map<string, ProviderResult[]>();
+const matchingPlaylistTracks = new Set<string>();
 let currentTrackId: string | null = null;
 let currentPlaylistId: string | null = null;
 let addCurrentTrackAfterCreate = false;
@@ -273,8 +353,10 @@ const refreshAccessibilityValues = (): void => {
   if (fontValue) fontValue.value = `${accessibilityFontScale}%`;
 };
 
-const activeProviderEmbed = (): string => {
-  if (!activeProviderResult || activeProviderResult.provider !== selectedSource) return "";
+const activeProviderEmbed = (expectedProvider: Provider): string => {
+  if (!activeProviderResult || activeProviderResult.provider !== expectedProvider) return "";
+  if (currentView === "playlists" && currentPlaylistId !== activeProviderPlaylistId) return "";
+  if (currentView !== "playlists" && activeProviderPlaylistId) return "";
   const result = activeProviderResult;
   if (result.provider === "youtube" && result.embedUrl) {
     return `<section class="provider-embed youtube-embed" aria-label="YouTube player"><h3>${escapeHtml(result.title)} · ${escapeHtml(result.artist)}</h3><iframe src="${escapeHtml(result.embedUrl)}" title="YouTube video: ${escapeHtml(result.title)}" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe><p class="provider-note">Use YouTube’s visible player controls. Provider playback does not use the bottom player or Discord presence yet; YouTube audio is never extracted or played in the background.</p></section>`;
@@ -297,7 +379,7 @@ const providerSearchMarkup = (): string => {
       : `<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-music"/></svg>`;
     const duration = result.durationSeconds ? ` · ${formatTime(result.durationSeconds)}` : "";
     const actionLabel = result.provider === "spotify" ? "Open in Spotify" : `Open ${providerLabel(result.provider)} player`;
-    return `<article class="provider-result"><span class="provider-result-art">${art}</span><span class="provider-result-copy"><strong>${escapeHtml(result.title)}</strong><span>${escapeHtml(result.artist)}${result.album ? ` · ${escapeHtml(result.album)}` : ""}${duration}${result.explicit ? " · Explicit" : ""}</span></span><span class="provider-result-actions"><button type="button" data-provider-play="${escapeHtml(result.id)}" aria-label="${actionLabel}: ${escapeHtml(result.title)}">${actionLabel}</button></span></article>`;
+    return `<article class="provider-result"><span class="provider-result-art">${art}</span><span class="provider-result-copy"><strong>${escapeHtml(result.title)}</strong><span>${escapeHtml(result.artist)}${result.album ? ` · ${escapeHtml(result.album)}` : ""}${duration}${result.explicit ? " · Explicit" : ""}</span></span><span class="provider-result-actions"><button type="button" data-provider-play="${escapeHtml(result.provider)}|${escapeHtml(result.id)}" aria-label="${actionLabel}: ${escapeHtml(result.title)}">${actionLabel}</button></span></article>`;
   }).join("");
   const connection = providerStatus(selectedSource);
   let contents = "";
@@ -314,9 +396,37 @@ const providerSearchMarkup = (): string => {
   } else if (!providerResults.length) {
     contents = emptyState("No matches", `No ${label} results found for “${query}”.`);
   } else {
-    contents = `${activeProviderEmbed()}<div class="provider-result-list">${results}</div>`;
+    contents = `${activeProviderEmbed(selectedSource)}<div class="provider-result-list">${results}</div>`;
   }
   return `<section class="provider-results" aria-live="polite"><div class="provider-results-heading"><h2>${label}${livePerformances ? " · Live performances" : ""}</h2><span>${selectedSource === "spotify" ? "Search on Spotify" : providerSearchPending ? "Searching" : `${providerResults.length} results`}</span></div>${contents}${selectedSource === "spotify" ? `<p class="provider-note">Spotify keeps its catalog and playback on Spotify. Viviette does not display Spotify catalog results in the combined provider search.</p>` : ""}</section>`;
+};
+
+const playlistTrackCount = (playlist: Playlist): number => playlist.trackIds.length + (playlist.importedTracks?.length ?? 0);
+
+const renderImportedPlaylistTrack = (playlist: Playlist, track: ImportedSpotifyTrack, index: number): string => {
+  const key = `${playlist.id}:${index}`;
+  const candidates = playlistMatchCandidates.get(key) ?? [];
+  const label = providerLabel(playlist.targetProvider ?? "youtube");
+  const match = track.match;
+  const searching = matchingPlaylistTracks.has(key);
+  const status = searching ? `Searching ${label}…` : match
+    ? `Suggested ${label} result: ${match.title} · ${match.artist}`
+    : track.matchStatus === "not-found" ? `No ${label} match found yet.`
+      : track.matchStatus === "error" ? `Could not search ${label}. Try again.`
+        : "Waiting to be matched.";
+  const art = match?.artworkUrl
+    ? `<img src="${escapeHtml(match.artworkUrl)}" loading="lazy" alt="" referrerpolicy="no-referrer">`
+    : `<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-music"/></svg>`;
+  const originalLink = track.spotifyUrl
+    ? `<a class="spotify-track-link" href="${escapeHtml(track.spotifyUrl)}" data-open-provider-url aria-label="Open ${escapeHtml(track.title)} on Spotify">Spotify ↗</a>`
+    : "";
+  const actions = match
+    ? `<button type="button" data-provider-play="${escapeHtml(match.provider)}|${escapeHtml(match.id)}" aria-label="Play suggested match for ${escapeHtml(track.title)}">Play on ${providerLabel(match.provider)}</button><button type="button" data-find-playlist-match="${escapeHtml(playlist.id)}" data-track-index="${index}" ${searching ? "disabled" : ""}>Find another</button>`
+    : `<button type="button" data-find-playlist-match="${escapeHtml(playlist.id)}" data-track-index="${index}" ${searching ? "disabled" : ""}>${searching ? "Searching…" : track.matchStatus === "pending" ? `Find on ${label}` : "Try again"}</button>`;
+  const candidateMarkup = candidates.length
+    ? `<div class="playlist-match-candidates" aria-label="Choose a ${label} match">${candidates.map((candidate, candidateIndex) => `<button type="button" data-use-playlist-match="${escapeHtml(playlist.id)}" data-track-index="${index}" data-candidate-index="${candidateIndex}"><strong>${escapeHtml(candidate.title)}</strong><span>${escapeHtml(candidate.artist)}${candidate.durationSeconds ? ` · ${formatTime(candidate.durationSeconds)}` : ""}</span></button>`).join("")}</div>`
+    : "";
+  return `<article class="provider-result imported-playlist-track" data-playlist-id="${escapeHtml(playlist.id)}"><span class="provider-result-art">${art}</span><span class="provider-result-copy"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(track.artist)}${track.album ? ` · ${escapeHtml(track.album)}` : ""}${track.durationSeconds ? ` · ${formatTime(track.durationSeconds)}` : ""}</span><span class="playlist-match-status">${escapeHtml(status)} · ${originalLink}</span></span><span class="provider-result-actions">${actions}</span>${candidateMarkup}</article>`;
 };
 
 const homeMarkup = (): string => {
@@ -335,7 +445,7 @@ const homeMarkup = (): string => {
   const featured = getTrack(currentTrackId ?? tracks[0]?.id ?? null);
   const cards = results.slice(0, 5).map(trackCard).join("");
   const rows = results.slice(0, 5).map(trackRow).join("");
-  const playlistCards = playlists.map((playlist, index) => `<button class="mix-card" type="button" data-playlist-open="${playlist.id}"><span class="playlist-art ${tracks[index % Math.max(1, tracks.length)]?.art ?? "art-focus"}" aria-hidden="true"></span><span class="mix-copy"><span class="mix-title">${escapeHtml(playlist.name)}</span><span class="mix-description">${playlist.trackIds.length} ${playlist.trackIds.length === 1 ? "track" : "tracks"}</span></span></button>`).join("");
+  const playlistCards = playlists.map((playlist, index) => `<button class="mix-card" type="button" data-playlist-open="${playlist.id}"><span class="playlist-art ${tracks[index % Math.max(1, tracks.length)]?.art ?? "art-focus"}" aria-hidden="true"></span><span class="mix-copy"><span class="mix-title">${escapeHtml(playlist.name)}</span><span class="mix-description">${playlistTrackCount(playlist)} ${playlistTrackCount(playlist) === 1 ? "track" : "tracks"}</span></span></button>`).join("");
   const feature = tracks.length ? `<section class="feature-card" aria-label="Current local track">
       <div class="feature-cover ${featured.art}" aria-hidden="true"></div>
       <div class="feature-copy"><div class="feature-label">${currentTrackId === featured.id && !audioElement.paused ? "Now playing" : "Your music"}</div><h2>${escapeHtml(featured.title)}</h2><p>${escapeHtml(featured.artist)}${featured.album ? ` · ${escapeHtml(featured.album)}` : ""}</p><div class="feature-meta"><span class="meta-chip">${escapeHtml(featured.format || "Local audio")}</span><span class="meta-chip">On this device</span></div></div>
@@ -359,11 +469,18 @@ const playlistsMarkup = (): string => {
   const selected = playlists.find((playlist) => playlist.id === currentPlaylistId);
   if (selected) {
     const playlistTracks = selected.trackIds.map((id) => getTrack(id)).filter((track) => track.id && filteredTracks().some((result) => result.id === track.id));
-    return `<div class="page">${pageHeading("YOUR LIBRARY", selected.name, `${playlistTracks.length} tracks`)}<section class="content-section"><button class="text-button" id="backToPlaylists" type="button">← All playlists</button><div class="track-list">${playlistTracks.map(trackRow).join("") || emptyState("This playlist is empty", "Add a track using the compact player controls.")}</div></section></div>`;
+    const importedTracks = selected.importedTracks ?? [];
+    const total = playlistTracks.length + importedTracks.length;
+    const providerNote = selected.spotifyPlaylistUrl
+      ? `<div class="spotify-import-note"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-spotify"/></svg><span>Playlist metadata imported from Spotify. Choose a suggested ${providerLabel(selected.targetProvider ?? "youtube")} result to play in its official player.</span><a href="${escapeHtml(selected.spotifyPlaylistUrl)}" data-open-provider-url>Open Spotify playlist ↗</a></div>`
+      : "";
+    const matchingNote = initialPlaylistMatching ? `<p class="provider-note">Finding initial ${providerLabel(selected.targetProvider ?? "youtube")} matches…</p>` : "";
+    const importedMarkup = importedTracks.map((track, index) => renderImportedPlaylistTrack(selected, track, index)).join("");
+    return `<div class="page">${pageHeading(selected.spotifyPlaylistUrl ? "SPOTIFY PLAYLIST TRANSFER" : "YOUR LIBRARY", selected.name, `${total} ${total === 1 ? "track" : "tracks"}`)}<section class="content-section"><button class="text-button" id="backToPlaylists" type="button">← All playlists</button>${providerNote}${matchingNote}${activeProviderEmbed(selected.targetProvider ?? "youtube")}<div class="track-list">${playlistTracks.map(trackRow).join("")}${importedMarkup}${total ? "" : emptyState("This playlist is empty", "Add a track using the compact player controls.")}</div></section></div>`;
   }
   const list = playlists.map((playlist, index) => `
-    <button class="mix-card" type="button" data-playlist-open="${playlist.id}"><span class="playlist-art ${tracks[index % Math.max(1, tracks.length)]?.art ?? "art-focus"}" aria-hidden="true"></span><span class="mix-copy"><span class="mix-title">${escapeHtml(playlist.name)}</span><span class="mix-description">${playlist.trackIds.length} ${playlist.trackIds.length === 1 ? "track" : "tracks"}</span></span><span class="heading-note">Open</span></button>`).join("");
-  return `<div class="page">${pageHeading("YOUR LIBRARY", "Playlists", `${playlists.length} playlists`)}<section class="content-section"><div class="section-header"><h2>Your playlists</h2><button class="text-button" type="button" id="pageCreatePlaylist">+ Create playlist</button></div><div class="mix-grid">${list || emptyState("No playlists yet", "Create one, then add tracks from the compact player bar.")}</div></section></div>`;
+    <button class="mix-card" type="button" data-playlist-open="${playlist.id}"><span class="playlist-art ${tracks[index % Math.max(1, tracks.length)]?.art ?? "art-focus"}" aria-hidden="true"></span><span class="mix-copy"><span class="mix-title">${escapeHtml(playlist.name)}</span><span class="mix-description">${playlistTrackCount(playlist)} ${playlistTrackCount(playlist) === 1 ? "track" : "tracks"}${playlist.spotifyPlaylistUrl ? " · Spotify import" : ""}</span></span><span class="heading-note">Open</span></button>`).join("");
+  return `<div class="page">${pageHeading("YOUR LIBRARY", "Playlists", `${playlists.length} playlists`)}<section class="content-section"><div class="section-header"><h2>Your playlists</h2><div class="playlist-page-actions"><button class="text-button" type="button" id="pageImportSpotifyPlaylist"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-spotify"/></svg>Import Spotify playlist</button><button class="text-button" type="button" id="pageCreatePlaylist">+ Create playlist</button></div></div><div class="mix-grid">${list || emptyState("No playlists yet", "Create one or import a playlist you own on Spotify.")}</div></section></div>`;
 };
 
 const providerConnectionRow = (provider: Provider): string => {
@@ -371,9 +488,12 @@ const providerConnectionRow = (provider: Provider): string => {
   const status = providerStatus(provider);
   const state = status.connected ? "Connected" : status.connectable ? "Ready to sign in" : "Sign-in unavailable";
   const buttons = status.connected
-    ? `<button type="button" data-provider-disconnect="${provider}">Log out</button>`
+    ? `${provider === "spotify" ? `<button type="button" data-provider-connect="spotify" ${status.connectable ? "" : "disabled"}>Update playlist access</button>` : ""}<button type="button" data-provider-disconnect="${provider}">Log out</button>`
     : `<button class="primary" type="button" data-provider-connect="${provider}" ${status.connectable ? "" : "disabled"} title="${status.connectable ? `Log in to ${label}` : "Sign-in is not configured for this build yet"}>Log in</button><button type="button" data-provider-signup="${provider}">Sign up</button>`;
-  return `<article class="setting-card provider-account-row" id="provider-account-${provider}"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${providerIcon(provider)}"/></svg><span class="setting-copy"><strong>${label}</strong><span>${status.connected ? "Your account is connected." : status.connectable ? "Log in to search and listen through this provider." : "Account sign-in is not available in this build yet."}</span></span><span class="setting-state">${state}</span><div class="provider-account-actions">${buttons}</div></article>`;
+  const description = provider === "spotify"
+    ? status.connected ? "Used to import metadata from playlists you own or collaborate on." : "Connect to import metadata from your Spotify playlists."
+    : status.connected ? "Your account is connected." : status.connectable ? "Log in to search and listen through this provider." : "Account sign-in is not available in this build yet.";
+  return `<article class="setting-card provider-account-row" id="provider-account-${provider}"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${providerIcon(provider)}"/></svg><span class="setting-copy"><strong>${label}</strong><span>${description}</span></span><span class="setting-state">${state}</span><div class="provider-account-actions">${buttons}</div></article>`;
 };
 
 const settingsMarkup = (): string => {
@@ -412,11 +532,13 @@ const openProviderDialog = (provider: Provider): void => {
   const accountExplain = provider === "youtube"
     ? "Sign in with Google to use your YouTube account. Videos open in YouTube’s official player."
     : provider === "spotify"
-      ? "Spotify sign-in opens in your browser. Catalog search and playback stay on Spotify."
+      ? "Connect Spotify to import playlist metadata. Viviette only reads playlists you own or collaborate on; it does not play Spotify audio."
       : "Sign in to SoundCloud to search tracks and play them in its official player.";
   const status = providerStatus(provider);
   const connectAction = status.connected
-    ? `<button class="primary" type="button" disabled>Connected</button>`
+    ? provider === "spotify"
+      ? `<button class="primary" type="button" data-provider-connect="spotify" ${status.connectable ? "" : "disabled"}>Update playlist access</button>`
+      : `<button class="primary" type="button" disabled>Connected</button>`
     : status.connectable
       ? `<button class="primary" type="button" data-provider-connect="${provider}">Continue with ${provider === "youtube" ? "Google" : label}</button>`
       : `<button class="primary" type="button" disabled title="Sign-in is not configured for this build yet">Sign-in unavailable</button>`;
@@ -481,10 +603,11 @@ const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElem
       try { localStorage.setItem(liveSearchStorageKey, "true"); } catch { /* active for this session */ }
     }
     providerDialog.classList.remove("provider-login");
-    providerDialog.close();
+    if (providerDialog.open) providerDialog.close();
     announce(message);
-    if (searchInput.value.trim()) scheduleProviderSearch();
+    if (searchInput.value.trim() && !pendingSpotifyImport && !pendingPlaylistMatchRequest) scheduleProviderSearch();
     if (currentView === "settings") renderPage();
+    await continuePendingPlaylistAction(provider);
   } catch (error) {
     if (connectButton) {
       connectButton.disabled = false;
@@ -494,6 +617,159 @@ const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElem
   }
 };
 
+const openSpotifyImportDialog = (): void => {
+  spotifyImportProvider.value = selectedSource === "soundcloud" ? "soundcloud" : "youtube";
+  if (!spotifyImportDialog.open) spotifyImportDialog.showModal();
+  window.setTimeout(() => spotifyPlaylistUrlInput.focus(), 0);
+};
+
+const continuePendingPlaylistAction = async (connectedProvider: Provider): Promise<void> => {
+  if (pendingSpotifyImport) {
+    const { url, targetProvider } = pendingSpotifyImport;
+    const missing = !providerStatus("spotify").connected ? "spotify" : !providerStatus(targetProvider).connected ? targetProvider : null;
+    if (missing) {
+      if (missing !== connectedProvider) openProviderDialog(missing);
+      return;
+    }
+    pendingSpotifyImport = null;
+    await performSpotifyPlaylistImport(url, targetProvider);
+    return;
+  }
+  if (pendingPlaylistMatchRequest && pendingPlaylistMatchRequest.playlistId && connectedProvider !== "spotify") {
+    const pending = pendingPlaylistMatchRequest;
+    if (providerStatus(connectedProvider).connected) {
+      pendingPlaylistMatchRequest = null;
+      await runPlaylistTrackMatch(pending.playlistId, pending.trackIndex, false);
+    }
+  }
+};
+
+const performSpotifyPlaylistImport = async (url: string, targetProvider: MatchProvider): Promise<void> => {
+  if (!isTauri()) {
+    announce("Spotify playlist import is available in the installed desktop app.");
+    return;
+  }
+  if (!providerStatus("spotify").connected) {
+    pendingSpotifyImport = { url, targetProvider };
+    openProviderDialog("spotify");
+    return;
+  }
+  if (!providerStatus(targetProvider).connected) {
+    pendingSpotifyImport = { url, targetProvider };
+    openProviderDialog(targetProvider);
+    return;
+  }
+  selectedSource = targetProvider;
+  try { localStorage.setItem(sourceStorageKey, selectedSource); } catch { /* active for this session */ }
+  updateSourceControls();
+  announce("Importing playlist metadata from Spotify…");
+  try {
+    const imported = await invoke<{
+      name: string;
+      spotifyUrl: string;
+      totalTracks: number;
+      truncated: boolean;
+      tracks: Array<{ spotifyId: string | null; title: string; artist: string; album: string | null; durationSeconds: number | null; spotifyUrl: string | null }>;
+    }>("spotify_import_playlist", { playlistUrl: url });
+    const existing = playlists.find((playlist) => playlist.spotifyPlaylistUrl === imported.spotifyUrl);
+    if (existing) {
+      currentView = "playlists";
+      currentPlaylistId = existing.id;
+      renderPage();
+      announce(`“${existing.name}” is already in your playlists.`);
+      return;
+    }
+    const seen = new Set<string>();
+    const importedTracks: ImportedSpotifyTrack[] = imported.tracks.filter((track) => {
+      const id = track.spotifyId || `${track.title.toLocaleLowerCase()}|${track.artist.toLocaleLowerCase()}`;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    }).map((track) => ({
+      spotifyId: track.spotifyId,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      durationSeconds: track.durationSeconds,
+      spotifyUrl: track.spotifyUrl,
+      match: null,
+      matchStatus: "pending",
+    }));
+    const playlist: Playlist = {
+      id: crypto.randomUUID(),
+      name: imported.name.slice(0, 48),
+      trackIds: [],
+      spotifyPlaylistUrl: imported.spotifyUrl,
+      targetProvider,
+      spotifyTotalTracks: imported.totalTracks,
+      importedTracks,
+    };
+    playlists.unshift(playlist);
+    persistPlaylists();
+    currentView = "playlists";
+    currentPlaylistId = playlist.id;
+    renderPage();
+    const capNote = imported.truncated ? " The API import was capped at 1,000 entries." : "";
+    announce(`Imported ${importedTracks.length} unique tracks from Spotify.${capNote} Matching the first 10 now…`);
+    void matchInitialPlaylistTracks(playlist.id);
+  } catch (error) {
+    announce(String(error).replace(/^Error: /, ""));
+  }
+};
+
+const runPlaylistTrackMatch = async (playlistId: string, trackIndex: number, quiet: boolean): Promise<void> => {
+  const playlist = playlists.find((item) => item.id === playlistId);
+  const track = playlist?.importedTracks?.[trackIndex];
+  if (!playlist || !track) return;
+  const targetProvider = playlist.targetProvider ?? "youtube";
+  if (!providerStatus(targetProvider).connected) {
+    pendingPlaylistMatchRequest = { playlistId, trackIndex };
+    openProviderDialog(targetProvider);
+    return;
+  }
+  const key = `${playlistId}:${trackIndex}`;
+  const wasAlreadyMatching = matchingPlaylistTracks.has(key);
+  if (wasAlreadyMatching) return;
+  matchingPlaylistTracks.add(key);
+  track.matchStatus = "pending";
+  renderPage();
+  try {
+    const results = await invoke<ProviderResult[]>("provider_search", {
+      provider: targetProvider,
+      query: `${track.artist} ${track.title}`,
+      livePerformances: false,
+    });
+    playlistMatchCandidates.set(key, results.slice(0, 5));
+    track.match = results[0] ?? null;
+    track.matchStatus = track.match ? "matched" : "not-found";
+    persistPlaylists();
+    if (!quiet) announce(track.match ? `Suggested a ${providerLabel(targetProvider)} match for “${track.title}”.` : `No ${providerLabel(targetProvider)} match found for “${track.title}”.`);
+  } catch (error) {
+    track.match = null;
+    track.matchStatus = "error";
+    if (!quiet) announce(String(error).replace(/^Error: /, ""));
+  } finally {
+    matchingPlaylistTracks.delete(key);
+    renderPage();
+  }
+};
+
+const matchInitialPlaylistTracks = async (playlistId: string): Promise<void> => {
+  const playlist = playlists.find((item) => item.id === playlistId);
+  if (!playlist?.importedTracks?.length) return;
+  initialPlaylistMatching = true;
+  renderPage();
+  const limit = Math.min(10, playlist.importedTracks.length);
+  for (let index = 0; index < limit; index++) {
+    if (!playlists.some((item) => item.id === playlistId)) break;
+    await runPlaylistTrackMatch(playlistId, index, true);
+  }
+  initialPlaylistMatching = false;
+  renderPage();
+  const matched = (playlists.find((item) => item.id === playlistId)?.importedTracks ?? []).slice(0, limit).filter((track) => track.match).length;
+  announce(`Found ${matched} suggested matches in the first ${limit} tracks. Use “Find on…” for the rest.`);
+};
+
 const searchProvider = async (): Promise<void> => {
   const query = searchInput.value.trim();
   if (!query) {
@@ -501,12 +777,14 @@ const searchProvider = async (): Promise<void> => {
     providerSearchError = "";
     providerSearchPending = false;
     activeProviderResult = null;
+    activeProviderPlaylistId = null;
     renderPage();
     return;
   }
   const sequence = ++providerSearchSequence;
   providerResults = [];
   activeProviderResult = null;
+  activeProviderPlaylistId = null;
   providerSearchError = "";
   providerSearchPending = true;
   currentView = "home";
@@ -552,6 +830,7 @@ function scheduleProviderSearch(): void {
   providerSearchError = "";
   providerSearchPending = Boolean(query && selectedSource !== "spotify" && providerStatus(selectedSource).connected);
   activeProviderResult = null;
+  activeProviderPlaylistId = null;
   if (!query) {
     renderPage();
     return;
@@ -919,6 +1198,8 @@ providerDialogBody.addEventListener("click", (event: MouseEvent) => {
     return;
   }
   if (target.closest("[data-provider-dialog-close]")) {
+    pendingSpotifyImport = null;
+    pendingPlaylistMatchRequest = null;
     providerDialog.classList.remove("provider-login");
     providerDialog.close();
   }
@@ -975,14 +1256,47 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
     void openSpotifySearch().catch((error) => announce(String(error)));
     return;
   }
+  const providerLink = target.closest<HTMLAnchorElement>("[data-open-provider-url]");
+  if (providerLink?.href) {
+    event.preventDefault();
+    void openProviderUrl(providerLink.href).catch((error) => announce(String(error)));
+    return;
+  }
+  const findMatchButton = target.closest<HTMLButtonElement>("[data-find-playlist-match]");
+  if (findMatchButton?.dataset.findPlaylistMatch) {
+    const trackIndex = Number(findMatchButton.dataset.trackIndex);
+    if (Number.isInteger(trackIndex)) void runPlaylistTrackMatch(findMatchButton.dataset.findPlaylistMatch, trackIndex, false);
+    return;
+  }
+  const useMatchButton = target.closest<HTMLButtonElement>("[data-use-playlist-match]");
+  if (useMatchButton?.dataset.usePlaylistMatch) {
+    const playlistId = useMatchButton.dataset.usePlaylistMatch;
+    const trackIndex = Number(useMatchButton.dataset.trackIndex);
+    const candidateIndex = Number(useMatchButton.dataset.candidateIndex);
+    const playlist = playlists.find((item) => item.id === playlistId);
+    const importedTrack = playlist?.importedTracks?.[trackIndex];
+    const candidate = playlistMatchCandidates.get(`${playlistId}:${trackIndex}`)?.[candidateIndex];
+    if (!importedTrack || !candidate) return;
+    importedTrack.match = candidate;
+    importedTrack.matchStatus = "matched";
+    playlistMatchCandidates.delete(`${playlistId}:${trackIndex}`);
+    persistPlaylists();
+    renderPage();
+    announce(`Updated the match for “${importedTrack.title}”.`);
+    return;
+  }
   const providerPlayButton = target.closest<HTMLElement>("[data-provider-play]");
   if (providerPlayButton?.dataset.providerPlay) {
-    const result = providerResults.find((item) => item.id === providerPlayButton.dataset.providerPlay);
+    const [providerName, resultId] = providerPlayButton.dataset.providerPlay.split("|", 2);
+    const result = providerResults.find((item) => item.provider === providerName && item.id === resultId)
+      ?? playlists.flatMap((playlist) => playlist.importedTracks ?? []).map((track) => track.match).find((item) => item?.provider === providerName && item.id === resultId)
+      ?? [...playlistMatchCandidates.values()].flat().find((item) => item.provider === providerName && item.id === resultId);
     if (!result) return;
     if (result.provider === "spotify") {
       void openProviderUrl(result.externalUrl).catch((error) => announce(String(error)));
     } else {
       activeProviderResult = result;
+      activeProviderPlaylistId = providerPlayButton.closest<HTMLElement>(".imported-playlist-track")?.dataset.playlistId ?? null;
       renderPage();
     }
     return;
@@ -997,8 +1311,18 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
     const provider = providerDisconnectButton.dataset.providerDisconnect as Provider;
     void invoke("provider_disconnect", { provider }).then(async () => {
       await refreshProviderStatuses();
+      if (provider === "spotify") {
+        const importedIds = new Set(playlists.filter((playlist) => playlist.spotifyPlaylistUrl).map((playlist) => playlist.id));
+        playlists = playlists.filter((playlist) => !playlist.spotifyPlaylistUrl);
+        for (const key of playlistMatchCandidates.keys()) {
+          if ([...importedIds].some((id) => key.startsWith(`${id}:`))) playlistMatchCandidates.delete(key);
+        }
+        persistPlaylists();
+        if (currentPlaylistId && importedIds.has(currentPlaylistId)) currentPlaylistId = null;
+        pendingSpotifyImport = null;
+      }
       renderPage();
-      announce(`${providerLabel(provider)} disconnected.`);
+      announce(provider === "spotify" ? "Spotify disconnected. Imported Spotify playlists were removed from Viviette." : `${providerLabel(provider)} disconnected.`);
     }).catch((error) => announce(String(error)));
     return;
   }
@@ -1021,6 +1345,7 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
     return;
   }
   if (target.closest("#pageCreatePlaylist")) openCreateDialog(false);
+  if (target.closest("#pageImportSpotifyPlaylist")) openSpotifyImportDialog();
   if (target.closest("[data-import-music]")) audioFiles.click();
   if (target.closest("#backToPlaylists")) { currentPlaylistId = null; renderPage(); }
   if (target.closest("#saveDiscordSettings")) {
@@ -1096,6 +1421,25 @@ mainContent.addEventListener("input", (event: Event) => {
 
 providerDialog.addEventListener("close", () => {
   pendingLiveFilter = false;
+});
+providerDialog.addEventListener("cancel", () => {
+  pendingSpotifyImport = null;
+  pendingPlaylistMatchRequest = null;
+});
+
+document.querySelector<HTMLButtonElement>("#cancelSpotifyImport")!.addEventListener("click", () => {
+  pendingSpotifyImport = null;
+  spotifyImportDialog.close();
+});
+
+spotifyImportForm.addEventListener("submit", (event: SubmitEvent) => {
+  event.preventDefault();
+  const url = spotifyPlaylistUrlInput.value.trim();
+  const targetProvider = spotifyImportProvider.value === "soundcloud" ? "soundcloud" : "youtube";
+  if (!url) return;
+  pendingSpotifyImport = { url, targetProvider };
+  spotifyImportDialog.close();
+  void performSpotifyPlaylistImport(url, targetProvider);
 });
 
 mainContent.addEventListener("change", (event: Event) => {

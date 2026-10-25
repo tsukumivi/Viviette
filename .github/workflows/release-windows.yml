@@ -68,7 +68,7 @@ jobs:
 
           Provider sign-in opens on each provider's official website; Viviette never receives provider passwords. Search requires an authorized provider account. Google and Spotify app IDs are configured by maintainers. SoundCloud sign-in is enabled only when its app ID and HTTPS token broker are configured; its client secret is never bundled in the installer. Account tokens are stored in Windows Credential Manager.
 
-          YouTube playback uses its visible official player; SoundCloud uses its official widget when configured; Spotify search results open in Spotify. These provider players are not yet connected to Viviette's bottom playback bar or Discord Rich Presence. The bottom player and pause-aware Discord timestamp work with imported local tracks.
+          YouTube playback uses its visible official player; SoundCloud uses its official widget when configured. Spotify playlist transfer reads metadata through the official API, then resolves tracks against YouTube or SoundCloud; the Spotify playlist must be owned by or shared with the connected Spotify account. Spotify audio is never extracted or played in Viviette. Provider playback is not yet connected to Viviette's bottom playback bar or Discord Rich Presence. The bottom player and pause-aware Discord timestamp work with imported local tracks.
 
           Verify Viviette-Setup.exe with SHA256SUMS.txt.
           '@
