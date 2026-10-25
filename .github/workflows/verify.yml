@@ -34,12 +34,11 @@ jobs:
           $cargoExitCode = $LASTEXITCODE
           $cargoOutput | ForEach-Object { Write-Output $_ }
           if ($cargoExitCode -ne 0) {
-            $cargoOutput |
-              Select-Object -Last 24 |
-              ForEach-Object {
-                $message = $_.ToString() -replace '\x1b\[[0-9;]*[A-Za-z]', ''
-                $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-                Write-Output "::error title=Rust backend diagnostic::$message"
-              }
+            $diagnostics = $cargoOutput | Select-Object -Last 60 | ForEach-Object {
+              $line = $_.ToString() -replace '\x1b\[[0-9;]*[A-Za-z]', ''
+              $line.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            }
+            $message = [string]::Join('%0A', $diagnostics)
+            Write-Output "::error title=Rust backend diagnostics::Cargo exited with code $cargoExitCode.%0A$message"
           }
           exit $cargoExitCode
