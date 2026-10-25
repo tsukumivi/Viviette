@@ -14,7 +14,7 @@ The NSIS installer is configured for the current Windows user and does not ask f
 
 ## Working in this checkout
 
-- Compact Riff-inspired left rail with Discover, Liked Songs, and Settings; a persistent search field and YouTube, SoundCloud, and Live Performances source selector sit beside it. The source choice is saved locally; provider playback is not connected yet.
+- Compact Riff-inspired left rail with Discover, Liked Songs, and Settings; a persistent search field and YouTube, SoundCloud, Live Performances, and Spotify source selector sit beside it.
 - Responsive dark interface and compact pinned playback bar. The Settings page uses a compact section rail and grouped rows for the integrations and playback controls that exist today.
 - Import local audio into an IndexedDB library. Likes and playlist track references persist locally; duplicate playlist entries are prevented.
 - Play, pause, seek, volume, shuffle, previous/next, and repeat off / queue / current track are wired to local playback. Repeat is free.
@@ -27,7 +27,16 @@ The NSIS installer is configured for the current Windows user and does not ask f
 
 Local files currently play through the Windows WebView audio decoder. Actual format support depends on that decoder and the file's codec; Viviette does not currently guarantee native FLAC/ALAC/WAV/DSD playback, exclusive WASAPI, gapless transitions, ReplayGain, or DSP/parametric EQ. DSD files can be imported into the library but may not decode. A future native audio engine is needed for those guarantees. The UI does not claim lossless quality when it cannot verify the source.
 
-No streaming provider is connected. Official provider playback, authentication, licensing eligibility, quality reporting, and download permissions must be established before adding a provider adapter. There is no scraping, protected-stream extraction, DRM bypass, or lossy-to-FLAC conversion.
+## Provider search and sign-in
+
+The prototype can search YouTube and SoundCloud after you add your own developer app credentials in **Settings → Integrations**. Spotify search opens on Spotify's own site. Selecting a provider opens its sign-in choices; YouTube and SoundCloud OAuth authorization takes place on the provider's website in your default browser. Viviette never asks for, receives, or stores provider passwords. YouTube and SoundCloud app keys, client secrets, and returned OAuth tokens are saved through the operating system credential store. No provider credentials are bundled in this repository or installer.
+
+- **YouTube:** Search uses the YouTube Data API with an API key, or an authorized Google account using the read-only YouTube scope. Search results only include embeddable videos and playback remains in YouTube's visible, official player, with its standard controls and ads. Background audio, extraction, and MP3 export from YouTube are not supported. Create credentials in [Google Cloud Console](https://console.cloud.google.com/apis/credentials), enable YouTube Data API v3, and register a Desktop OAuth client if you want Google sign-in. Google also requires the OAuth consent screen, support details, and privacy disclosures. The default callback is `http://127.0.0.1:47619/callback`.
+- **SoundCloud:** Search uses its official API and authorized tracks are shown in the official SoundCloud widget. App registration currently requires SoundCloud Artist Pro; create an app at [Your SoundCloud Apps](https://soundcloud.com/you/apps) and add the callback URI above. Public search can run with the app credentials without connecting a personal account. [SoundCloud API app registration](https://developers.soundcloud.com/docs/api/register-app) explains the current requirements.
+- **Spotify:** Search, sign-in, and playback open on Spotify itself. Viviette does not display Spotify catalog metadata alongside other provider content. This avoids the Spotify Developer Policy restriction on integrating Spotify content with another service. See the [Spotify Developer Policy](https://developer.spotify.com/policy).
+- **Live Performances** is a search filter that adds concert-recording terms to whichever catalog is selected. It is not a separate provider.
+
+YouTube and SoundCloud availability is subject to your own API credentials, quota, OAuth consent-screen status, account eligibility, regional catalog, and provider approval. YouTube and SoundCloud playback use their embedded players' own controls; provider playback is not yet linked to Viviette's bottom player or Discord presence. Spotify search and playback open externally on Spotify. The bottom bar and pause-aware Rich Presence currently control imported local tracks. No authorized MP3 export is currently available from these search providers. Viviette does not scrape streams, extract protected audio, bypass DRM, or convert lossy audio to FLAC.
 
 Discord needs an Application ID created in the Developer Portal. Discord currently restricts RPC access for unapproved applications to listed testers, so general availability may require approval or tester enrollment. Discord documents native RPC over IPC and recommends its Social SDK for new game social integrations; Viviette uses a community Rust crate for the IPC transport. Local album artwork is not published to Discord; a provider-supplied public HTTPS artwork URL can be passed by a future provider adapter. Discord connection state is observable in Settings when that page is open. Presence data includes the current title and artist only while the setting is enabled.
 
@@ -54,7 +63,7 @@ Create a Windows setup executable with:
 pnpm tauri build --bundles nsis
 ```
 
-Push a tag such as `v0.1.0` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
+Push a tag such as `v0.1.2` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
 
 ## Architecture
 
@@ -63,6 +72,7 @@ Push a tag such as `v0.1.0` to create the GitHub release. The workflow emits `Vi
 - `src/playback/adapter.ts`: provider-neutral playback controls used by device-loss handling.
 - `src-tauri/src/audio_output.rs`: Windows Core Audio device-change events.
 - `src-tauri/src/discord_presence.rs`: dedicated Discord IPC worker with pause-aware timestamps.
+- `src-tauri/src/providers.rs`: provider search, browser-based OAuth with PKCE, provider playback URLs, and OS credential-store access.
 - `src-tauri/src/lib.rs`: Tauri command registration.
 - `.github/workflows`: frontend/native verification and tagged Windows packaging.
 

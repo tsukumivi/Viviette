@@ -41,4 +41,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ github.ref_name }}"
-          gh release create $tag "Viviette-Setup.exe" "SHA256SUMS.txt" --title "Viviette $tag" --notes "Windows desktop installer. This setup installs Viviette for the current Windows user and does not require administrator access. Verify the installer with SHA256SUMS.txt."
+          $notes = @'
+          Windows desktop installer for Viviette. Installs for the current Windows user and does not require administrator access.
+
+          YouTube and SoundCloud catalog search is available after you configure your own API credentials in Settings → Integrations. OAuth sign-in opens on the provider's own website; Viviette never receives provider passwords. API credentials and OAuth tokens are stored in Windows Credential Manager. Spotify search and sign-in open on Spotify itself.
+
+          YouTube playback uses its visible official player; SoundCloud uses its official widget; Spotify search results open in Spotify. These provider players are not yet connected to Viviette's bottom playback bar or Discord Rich Presence. The bottom player and pause-aware Discord timestamp work with imported local tracks.
+
+          Verify Viviette-Setup.exe with SHA256SUMS.txt.
+          '@
+          gh release create $tag "Viviette-Setup.exe" "SHA256SUMS.txt" --title "Viviette $tag" --notes $notes

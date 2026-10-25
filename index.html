@@ -15,6 +15,7 @@
         <symbol id="riff-settings" viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></symbol>
         <symbol id="riff-youtube" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M21.58 7.19c-.23-.86-.91-1.54-1.77-1.77C18.25 5 12 5 12 5s-6.25 0-7.81.42c-.86.23-1.54.91-1.77 1.77C2 8.75 2 12 2 12s0 3.25.42 4.81c.23.86.91 1.54 1.77 1.77C5.75 19 12 19 12 19s6.25 0 7.81-.42c.86-.23 1.54-.91 1.77-1.77C22 15.25 22 12 22 12s0-3.25-.42-4.81zM10 15V9l5.2 3-5.2 3z"/></symbol>
         <symbol id="riff-soundcloud" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M11.5 14.5c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-4c0-.28.22-.5.5-.5s.5.22.5.5v4zm-2 0c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-3c0-.28.22-.5.5-.5s.5.22.5.5v3zm-2 0c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-2c0-.28.22-.5.5-.5s.5.22.5.5v2zm-2 0c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-1c0-.28.22-.5.5-.5s.5.22.5.5v1zm14.5-.5c0 1.93-1.57 3.5-3.5 3.5H13V9.1c.7-.6 1.6-1.1 2.6-1.1 2.2 0 4.1 1.6 4.4 3.8.3-.2.7-.3 1-.3 1.4 0 2.5 1.1 2.5 2.5z"/></symbol>
+        <symbol id="riff-spotify" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M6.5 9c3.8-1.2 8.4-.8 11.5 1.1M7.5 12c3.1-.9 6.9-.6 9.5.9M8.4 15c2.3-.6 5-.3 6.9.8"/></symbol>
         <symbol id="riff-live" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42m-9.88 9.88-1.42 1.42"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
         <symbol id="riff-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
         <symbol id="riff-download" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" fill="currentColor" stroke="none"/></symbol>
@@ -54,10 +55,11 @@
           <kbd>Ctrl K</kbd>
         </label>
 
-        <div class="source-switch" role="group" aria-label="Music source">
-          <button class="source-option is-selected" type="button" data-source="youtube" aria-label="YouTube" aria-pressed="true" title="YouTube is selected. Provider playback is not connected yet."><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-youtube"/></svg><span>YouTube</span></button>
-          <button class="source-option" type="button" data-source="soundcloud" aria-label="SoundCloud" aria-pressed="false" title="Select SoundCloud. Provider playback is not connected yet."><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-soundcloud"/></svg><span>SoundCloud</span></button>
-          <button class="source-option" type="button" data-source="live" aria-label="Live Performances" aria-pressed="false" title="Live performances are alternate concert recordings. Provider playback is not connected yet."><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-live"/></svg><span>Live Performances</span></button>
+        <div class="source-switch" role="group" aria-label="Search provider">
+          <button class="source-option is-selected" type="button" data-source="youtube" aria-label="YouTube" aria-pressed="true" title="Search YouTube videos"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-youtube"/></svg><span>YouTube</span></button>
+          <button class="source-option" type="button" data-source="soundcloud" aria-label="SoundCloud" aria-pressed="false" title="Search SoundCloud tracks"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-soundcloud"/></svg><span>SoundCloud</span></button>
+          <button class="source-option" type="button" data-source="live" aria-label="Live Performances" aria-pressed="false" title="Filter for concert recordings"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-live"/></svg><span>Live Performances</span></button>
+          <button class="source-option" type="button" data-source="spotify" aria-label="Spotify" aria-pressed="false" title="Search Spotify catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-spotify"/></svg><span>Spotify</span></button>
         </div>
       </header>
 
@@ -123,6 +125,10 @@
           <input id="playlistName" name="playlistName" maxlength="48" placeholder="Give it a name" required />
           <div class="dialog-actions"><button class="button-quiet" id="cancelCreate" type="button">Cancel</button><button class="button-primary" type="submit">Create</button></div>
         </form>
+      </dialog>
+
+      <dialog class="create-dialog provider-dialog" id="providerDialog" aria-labelledby="providerDialogTitle">
+        <div id="providerDialogBody"></div>
       </dialog>
 
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
