@@ -31,12 +31,34 @@ Local files currently play through the Windows WebView audio decoder. Actual for
 
 People use the provider buttons in Viviette to log in or create an account. Provider passwords are entered only on the provider's official site. Viviette does not collect provider passwords. OAuth tokens are stored in the operating system credential store. The app no longer asks users to paste API keys, client IDs, or client secrets into Settings.
 
-Provider OAuth apps still have to be registered by the Viviette maintainers. Google and Spotify client IDs are supplied to release builds through GitHub Actions repository variables named `VIVIETTE_YOUTUBE_CLIENT_ID` and `VIVIETTE_SPOTIFY_CLIENT_ID`. These are public app identifiers, not user credentials. Without those variables, the app reports sign-in unavailable instead of presenting a developer-setup form. Google desktop OAuth uses PKCE and the loopback callback `http://127.0.0.1:47619/callback`; a public Google OAuth app may need consent-screen verification and YouTube Data API approval/quota.
+Provider OAuth apps still have to be registered by the Viviette maintainers. YouTube and Spotify client IDs are supplied to release builds through GitHub Actions repository variables named `VIVIETTE_YOUTUBE_CLIENT_ID` and `VIVIETTE_SPOTIFY_CLIENT_ID`. These are public app identifiers, not user credentials. Without those variables, the app reports sign-in unavailable instead of presenting a developer-setup form.
 
 - **YouTube:** Search is available only after Google authorization and uses the YouTube Data API. Results open in YouTube's visible official player with its standard controls and ads. Viviette does not extract audio, support background playback, or export MP3 from YouTube.
-- **SoundCloud:** SoundCloud OAuth uses PKCE and the desktop callback `viviette://soundcloud/callback`; Tauri deep links route it back to the running app. SoundCloud currently requires a client secret for token exchange. A secret embedded in a public desktop binary cannot be kept confidential, so a secure server-side token exchange must be set up before enabling SoundCloud sign-in for fresh installs. Existing locally saved app credentials from older prototypes may still be used. API app registration currently requires Artist Pro; see [SoundCloud API app registration](https://developers.soundcloud.com/docs/api/register-app) and its [OAuth guide](https://developers.soundcloud.com/docs/api/guide).
+- **SoundCloud:** SoundCloud OAuth uses PKCE and the desktop callback `viviette://soundcloud/callback`; Tauri deep links route it back to the running app. SoundCloud requires its client secret during code exchange, so the desktop app sends the exchange to the small HTTPS worker in `services/soundcloud-token-broker/`. The worker keeps the secret server-side and is never bundled with Viviette. Register the callback with SoundCloud, deploy the worker, then set the GitHub Actions variables `VIVIETTE_SOUNDCLOUD_CLIENT_ID` and `VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL` (the full HTTPS URL ending in `/oauth/token`). SoundCloud's current app registration requires Artist Pro; see [SoundCloud API app registration](https://developers.soundcloud.com/docs/api/register-app) and its [OAuth guide](https://developers.soundcloud.com/docs/api/guide).
 - **Spotify:** Login uses Authorization Code with PKCE in the system browser and the loopback callback `http://127.0.0.1:47619/callback`. Spotify search and playback remain on Spotify; its catalog is not combined with the other services. See the [Spotify PKCE guide](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow) and [redirect URI rules](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri).
 - **Live Performances** adds concert-recording terms to the selected provider's search. It is a filter, not a separate service, and it requires signing in to the selected provider.
+
+### Configure provider sign-in for a release
+
+These are maintainer-only setup steps. End users sign in on the providers' official websites; Viviette never asks them for provider passwords, API keys, or developer credentials.
+
+**YouTube / Google:** Create a Google Cloud project, enable YouTube Data API v3, configure the OAuth consent screen, and create an OAuth client of type **Desktop app**. If the consent screen is in Testing, add the Google accounts that will test the app. A public release may require Google consent-screen verification and YouTube API quota approval. Add the resulting Client ID to GitHub **Settings → Secrets and variables → Actions → Variables** as `VIVIETTE_YOUTUBE_CLIENT_ID`. The app uses the loopback callback `http://127.0.0.1:47619/callback`. Google's YouTube API setup and credentials are documented [here](https://developers.google.com/youtube/registering_an_application) and [here](https://developers.google.com/youtube/v3/getting-started).
+
+**Spotify:** Add the callback `http://127.0.0.1:47619/callback` in the Spotify app settings, then add its Client ID to the same GitHub Variables page as `VIVIETTE_SPOTIFY_CLIENT_ID`. Spotify Development Mode requires a Premium owner and restricts use to allowlisted test accounts; see its [quota mode guide](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
+
+**SoundCloud:** SoundCloud app registration currently requires Artist Pro. Register `viviette://soundcloud/callback`, then deploy the worker:
+
+```sh
+cd services/soundcloud-token-broker
+npx wrangler login
+npx wrangler secret put SOUNDCLOUD_CLIENT_ID
+npx wrangler secret put SOUNDCLOUD_CLIENT_SECRET
+npx wrangler deploy
+```
+
+The two `wrangler secret put` commands prompt securely; neither value goes into the app binary or source control. Add the app's Client ID to GitHub Actions Variables as `VIVIETTE_SOUNDCLOUD_CLIENT_ID`, and the deployed worker URL ending in `/oauth/token` as `VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL`. Apply a Cloudflare rate limit to `/oauth/token` before broad distribution. Worker deployment requires a Cloudflare account and Node.js/npm.
+
+Once all desired provider variables are saved and the SoundCloud worker is deployed, pushing a new `v*` tag builds a fresh installer. Existing releases do not change when variables are added.
 
 OAuth uses the normal system browser because providers such as Google prohibit login inside an app-controlled embedded browser. YouTube and SoundCloud playback use their official players; provider playback is not yet linked to Viviette's bottom player or Discord presence. Spotify search and playback open on Spotify. The bottom bar and pause-aware Rich Presence currently control imported local tracks. No authorized MP3 export is available from these search providers. Viviette does not scrape streams, extract protected audio, bypass DRM, or convert lossy audio to FLAC.
 
@@ -65,7 +87,7 @@ Create a Windows setup executable with:
 pnpm tauri build --bundles nsis
 ```
 
-Push a tag such as `v0.1.6` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
+Push a tag such as `v0.1.7` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
 
 ## Architecture
 

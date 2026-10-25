@@ -1,0 +1,4 @@
+name = "viviette-soundcloud-token-broker"
+main = "src/index.js"
+compatibility_date = "2026-10-26"
+

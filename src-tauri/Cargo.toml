@@ -1,6 +1,6 @@
 [package]
 name = "viviette"
-version = "0.1.6"
+version = "0.1.7"
 description = "Lightweight desktop music player"
 authors = ["Viviette"]
 edition = "2021"

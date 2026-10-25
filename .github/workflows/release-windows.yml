@@ -25,11 +25,29 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
+      - name: Validate provider configuration
+        shell: pwsh
+        env:
+          VIVIETTE_YOUTUBE_CLIENT_ID: ${{ vars.VIVIETTE_YOUTUBE_CLIENT_ID }}
+          VIVIETTE_SPOTIFY_CLIENT_ID: ${{ vars.VIVIETTE_SPOTIFY_CLIENT_ID }}
+          VIVIETTE_SOUNDCLOUD_CLIENT_ID: ${{ vars.VIVIETTE_SOUNDCLOUD_CLIENT_ID }}
+          VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL: ${{ vars.VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL }}
+        run: |
+          $required = @(
+            "VIVIETTE_YOUTUBE_CLIENT_ID",
+            "VIVIETTE_SPOTIFY_CLIENT_ID",
+            "VIVIETTE_SOUNDCLOUD_CLIENT_ID",
+            "VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL"
+          )
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "Configure these GitHub Actions variables before publishing: $($missing -join ', ')" }
       - name: Build the Windows setup package
         run: pnpm tauri build --bundles nsis
         env:
           VIVIETTE_YOUTUBE_CLIENT_ID: ${{ vars.VIVIETTE_YOUTUBE_CLIENT_ID }}
           VIVIETTE_SPOTIFY_CLIENT_ID: ${{ vars.VIVIETTE_SPOTIFY_CLIENT_ID }}
+          VIVIETTE_SOUNDCLOUD_CLIENT_ID: ${{ vars.VIVIETTE_SOUNDCLOUD_CLIENT_ID }}
+          VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL: ${{ vars.VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL }}
       - name: Prepare the stable installer name and checksum
         shell: pwsh
         run: |
@@ -47,7 +65,7 @@ jobs:
           $notes = @'
           Windows desktop installer for Viviette. Installs for the current Windows user and does not require administrator access.
 
-          Provider sign-in opens on each provider's official website; Viviette never receives provider passwords. Search requires an authorized provider account. Google and Spotify sign-in require release app IDs to be configured by maintainers. This build has no SoundCloud token-exchange service, so SoundCloud sign-in is unavailable to new installs until that service is configured. Account tokens are stored in Windows Credential Manager.
+          Provider sign-in opens on each provider's official website; Viviette never receives provider passwords. Search requires an authorized provider account. Google, Spotify, and SoundCloud app settings must be configured by maintainers. SoundCloud uses a separate HTTPS token broker so its client secret is never bundled in the installer. Account tokens are stored in Windows Credential Manager.
 
           YouTube playback uses its visible official player; SoundCloud uses its official widget when configured; Spotify search results open in Spotify. These provider players are not yet connected to Viviette's bottom playback bar or Discord Rich Presence. The bottom player and pause-aware Discord timestamp work with imported local tracks.
 

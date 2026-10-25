@@ -105,6 +105,9 @@ fn config_value(provider: &str, field: &str) -> Result<String, String> {
         ("youtube", "client_id") => option_env!("VIVIETTE_YOUTUBE_CLIENT_ID"),
         ("youtube", "client_secret") => option_env!("VIVIETTE_YOUTUBE_CLIENT_SECRET"),
         ("soundcloud", "client_id") => option_env!("VIVIETTE_SOUNDCLOUD_CLIENT_ID"),
+        ("soundcloud", "token_broker_url") => {
+            option_env!("VIVIETTE_SOUNDCLOUD_TOKEN_BROKER_URL")
+        }
         ("spotify", "client_id") => option_env!("VIVIETTE_SPOTIFY_CLIENT_ID"),
         _ => None,
     };
@@ -112,6 +115,26 @@ fn config_value(provider: &str, field: &str) -> Result<String, String> {
         return Ok(value.to_string());
     }
     Ok(read_secret(&format!("{provider}.{field}"))?.unwrap_or_default())
+}
+
+fn soundcloud_token_broker_url() -> Result<String, String> {
+    let value = config_value("soundcloud", "token_broker_url")?;
+    let url = Url::parse(&value).map_err(|_| {
+        "SoundCloud sign-in needs a valid HTTPS token service configured for this build."
+            .to_string()
+    })?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.path() != "/oauth/token"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "SoundCloud sign-in needs a valid HTTPS token service configured for this build."
+                .to_string(),
+        );
+    }
+    Ok(value)
 }
 
 pub fn status() -> Result<Vec<ProviderStatus>, String> {
@@ -135,7 +158,7 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
             }
             "soundcloud" => {
                 let configured = !config_value(provider, "client_id")?.is_empty()
-                    && !config_value(provider, "client_secret")?.is_empty();
+                    && soundcloud_token_broker_url().is_ok();
                 (
                     configured,
                     configured,
@@ -177,10 +200,25 @@ pub fn status() -> Result<Vec<ProviderStatus>, String> {
 
 fn http_client() -> Result<Client, String> {
     Client::builder()
-        .user_agent("Viviette/0.1.6 provider integration")
+        .user_agent(format!(
+            "Viviette/{} provider integration",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(Duration::from_secs(18))
         .build()
         .map_err(|error| format!("Could not initialize provider networking: {error}"))
+}
+
+fn token_broker_client() -> Result<Client, String> {
+    Client::builder()
+        .user_agent(format!(
+            "Viviette/{} provider integration",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .timeout(Duration::from_secs(18))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not initialize secure provider networking: {error}"))
 }
 
 fn oauth_url(
@@ -324,9 +362,24 @@ fn exchange_code(
     client_secret: &str,
     redirect_uri: &str,
 ) -> Result<OAuthToken, String> {
+    if provider == "soundcloud" {
+        let broker_url = soundcloud_token_broker_url()?;
+        let payload = serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": verifier,
+        });
+        let response = token_broker_client()?
+            .post(broker_url)
+            .json(&payload)
+            .send()
+            .map_err(|error| format!("Could not complete SoundCloud sign-in: {error}"))?;
+        return parse_token_response(response);
+    }
     let endpoint = match provider {
         "youtube" => "https://oauth2.googleapis.com/token",
-        "soundcloud" => "https://secure.soundcloud.com/oauth/token",
         "spotify" => "https://accounts.spotify.com/api/token",
         _ => return Err("Unknown music provider.".to_string()),
     };
@@ -446,17 +499,18 @@ pub fn receive_deep_link(url: Url) {
 pub fn connect(app: &tauri::AppHandle, provider: &str) -> Result<String, String> {
     let provider = valid_provider(provider)?;
     let client_id = config_value(provider, "client_id")?;
-    let client_secret = config_value(provider, "client_secret")?;
+    let client_secret = if provider == "soundcloud" {
+        String::new()
+    } else {
+        config_value(provider, "client_secret")?
+    };
     if client_id.is_empty() {
         return Err(format!(
             "{provider} sign-in is not configured for this build. Please try another provider."
         ));
     }
-    if client_secret.is_empty() && provider == "soundcloud" {
-        return Err(
-            "SoundCloud sign-in is not configured for this build. Please try another provider."
-                .to_string(),
-        );
+    if provider == "soundcloud" {
+        soundcloud_token_broker_url()?;
     }
     let redirect_uri = if provider == "soundcloud" {
         SOUNDCLOUD_REDIRECT_URI
@@ -544,10 +598,36 @@ fn refresh_token(
         .as_deref()
         .ok_or_else(|| "Your provider session expired. Connect the account again.".to_string())?;
     let client_id = config_value(provider, "client_id")?;
-    let client_secret = config_value(provider, "client_secret")?;
+    let client_secret = if provider == "soundcloud" {
+        String::new()
+    } else {
+        config_value(provider, "client_secret")?
+    };
+    if provider == "soundcloud" {
+        let broker_url = soundcloud_token_broker_url()?;
+        let payload = serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": refresh,
+        });
+        let mut next = parse_token_response(
+            token_broker_client()?
+                .post(broker_url)
+                .json(&payload)
+                .send()
+                .map_err(|error| format!("Could not refresh SoundCloud authorization: {error}"))?,
+        )?;
+        if next.refresh_token.is_none() {
+            next.refresh_token = previous.refresh_token.clone();
+        }
+        write_secret(
+            token_key,
+            &serde_json::to_string(&next).map_err(|error| error.to_string())?,
+        )?;
+        return Ok(next);
+    }
     let endpoint = match provider {
         "youtube" => "https://oauth2.googleapis.com/token",
-        "soundcloud" => "https://secure.soundcloud.com/oauth/token",
         "spotify" => "https://accounts.spotify.com/api/token",
         _ => return Err("Unknown music provider.".to_string()),
     };
