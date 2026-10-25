@@ -87,7 +87,7 @@ Create a Windows setup executable with:
 pnpm tauri build --bundles nsis
 ```
 
-Push a tag such as `v0.1.7` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
+Push a tag such as `v0.1.8` to create the GitHub release. The workflow emits `Viviette-Setup.exe` and `SHA256SUMS.txt`.
 
 ## Architecture
 
