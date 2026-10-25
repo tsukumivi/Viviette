@@ -496,6 +496,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .source-option[data-source="spotify"] svg { fill: none; stroke: currentColor; stroke-width: 1.8; }
 .source-option[data-source="live"].is-selected { background: #38312b; color: #f1c78a; }
 .provider-results { margin-top: 18px; }
+.search-page .provider-results { margin-top: 0; }
+.local-search-matches { margin-top: 24px; }
 .provider-results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .provider-results-heading h2 { margin: 0; font-size: calc(var(--accessibility-font-scale, 1) * 15px); font-weight: 600; }
 .provider-results-heading span { color: var(--subtle); font-size: calc(var(--accessibility-font-scale, 1) * 10px); }

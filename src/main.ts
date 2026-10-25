@@ -306,7 +306,7 @@ const providerSearchMarkup = (): string => {
     contents = `<div class="search-prompt"><div><strong>Sign in to ${label} to search</strong><p>${escapeHtml(connection.detail)} Your password stays with ${selectedSource === "youtube" ? "Google" : label}.</p></div>${action}</div>`;
   } else if (selectedSource === "spotify") {
     const externalQuery = livePerformances ? `${query} live concert performance` : query;
-    contents = `<div class="search-prompt"><div><strong>Search on Spotify</strong><p>Your Spotify account is connected. Search and playback stay on Spotify.</p></div><button type="button" data-provider-search-external>Search Spotify for “${escapeHtml(externalQuery)}”</button></div>`;
+    contents = `<div class="search-prompt"><div><strong>Search on Spotify</strong><p>Your Spotify account is connected. Spotify results and playback stay on Spotify. Choose YouTube or SoundCloud for in-app provider results.</p></div><button type="button" data-provider-search-external>Open Spotify search for “${escapeHtml(externalQuery)}”</button></div>`;
   } else if (providerSearchPending) {
     contents = emptyState("Searching…", `Looking for “${query}” on ${label}${filterNote}.`);
   } else if (providerSearchError) {
@@ -316,11 +316,22 @@ const providerSearchMarkup = (): string => {
   } else {
     contents = `${activeProviderEmbed()}<div class="provider-result-list">${results}</div>`;
   }
-  return `<section class="provider-results" aria-live="polite"><div class="provider-results-heading"><h2>${label}${livePerformances ? " · Live performances" : ""}</h2><span>${selectedSource === "spotify" ? "External search" : providerSearchPending ? "Searching" : `${providerResults.length} results`}</span></div>${contents}${selectedSource === "spotify" ? `<p class="provider-note">Spotify requires its catalog content to remain separate from other services. Search, sign-in, and playback are handled on Spotify.</p>` : ""}</section>`;
+  return `<section class="provider-results" aria-live="polite"><div class="provider-results-heading"><h2>${label}${livePerformances ? " · Live performances" : ""}</h2><span>${selectedSource === "spotify" ? "Search on Spotify" : providerSearchPending ? "Searching" : `${providerResults.length} results`}</span></div>${contents}${selectedSource === "spotify" ? `<p class="provider-note">Spotify keeps its catalog and playback on Spotify. Viviette does not display Spotify catalog results in the combined provider search.</p>` : ""}</section>`;
 };
 
 const homeMarkup = (): string => {
+  const query = searchInput.value.trim();
   const results = filteredTracks();
+  if (query) {
+    const localMatches = results.length
+      ? `<section class="content-section local-search-matches"><div class="section-header"><h2>In your library</h2><span class="heading-note">${results.length} ${results.length === 1 ? "track" : "tracks"}</span></div><div class="track-list">${results.map(trackRow).join("")}</div></section>`
+      : "";
+    return `<div class="page search-page">
+      ${pageHeading("SEARCH", `Results for “${query}”`, providerLabel(selectedSource))}
+      ${providerSearchMarkup()}
+      ${localMatches}
+    </div>`;
+  }
   const featured = getTrack(currentTrackId ?? tracks[0]?.id ?? null);
   const cards = results.slice(0, 5).map(trackCard).join("");
   const rows = results.slice(0, 5).map(trackRow).join("");
@@ -332,7 +343,6 @@ const homeMarkup = (): string => {
     </section>` : `<section class="welcome-card"><div class="welcome-orb" aria-hidden="true">V</div><div><p class="eyebrow">YOUR MUSIC, YOUR WAY</p><h2>Start with your own collection</h2><p>Import audio files from your device. Viviette keeps the library on this computer.</p>${importButton("Choose music")}</div></section>`;
   return `<div class="page">
     ${pageHeading("YOUR MUSIC", "Discover", `${tracks.length} local ${tracks.length === 1 ? "track" : "tracks"}`)}
-    ${providerSearchMarkup()}
     ${feature}
     <section class="content-section"><div class="section-header"><h2>${searchInput.value ? "Search results" : "Recently added"}</h2><button class="text-button" type="button" data-view="library">See library <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-chevron-right"/></svg></button></div><div class="album-grid">${cards || emptyState(searchInput.value ? "No matches" : "Your library is empty", searchInput.value ? "Try another title, artist, album, or filename." : "Tracks you import will appear here.")}</div></section>
     <section class="content-section"><div class="section-header"><h2>Your playlists</h2><button class="text-button" type="button" id="pageCreatePlaylist">Create playlist <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#riff-plus"/></svg></button></div><div class="mix-grid">${playlistCards || emptyState("No playlists yet", "Create one, then add songs from the player bar.")}</div></section>
@@ -435,6 +445,17 @@ const openProviderUrl = async (url: string): Promise<void> => {
   else window.open(url, "_blank", "noopener,noreferrer");
 };
 
+const openSpotifySearch = async (): Promise<void> => {
+  const query = searchInput.value.trim();
+  if (!query) return;
+  if (!providerStatus("spotify").connected) {
+    openProviderDialog("spotify");
+    return;
+  }
+  const externalQuery = livePerformances ? `${query} live concert performance` : query;
+  await openProviderUrl(`https://open.spotify.com/search/${encodeURIComponent(externalQuery)}`);
+};
+
 const connectProvider = async (provider: Provider, sourceButton?: HTMLButtonElement): Promise<void> => {
   if (!providerStatus(provider).connectable) {
     announce(providerStatus(provider).detail);
@@ -529,7 +550,7 @@ function scheduleProviderSearch(): void {
   providerSearchSequence++;
   providerResults = [];
   providerSearchError = "";
-  providerSearchPending = false;
+  providerSearchPending = Boolean(query && selectedSource !== "spotify" && providerStatus(selectedSource).connected);
   activeProviderResult = null;
   if (!query) {
     renderPage();
@@ -930,6 +951,11 @@ searchInput.addEventListener("input", () => {
   renderPage();
 });
 searchInput.addEventListener("keydown", (event: KeyboardEvent) => {
+  if (event.key === "Enter" && selectedSource === "spotify" && searchInput.value.trim()) {
+    event.preventDefault();
+    void openSpotifySearch().catch((error) => announce(String(error)));
+    return;
+  }
   if (event.key === "Escape" && searchInput.value) {
     searchInput.value = "";
     scheduleProviderSearch();
@@ -946,10 +972,7 @@ mainContent.addEventListener("click", (event: MouseEvent) => {
     return;
   }
   if (target.closest("[data-provider-search-external]")) {
-    const query = searchInput.value.trim();
-    if (!query) return;
-    const externalQuery = livePerformances ? `${query} live concert performance` : query;
-    void openProviderUrl(`https://open.spotify.com/search/${encodeURIComponent(externalQuery)}`).catch((error) => announce(String(error)));
+    void openSpotifySearch().catch((error) => announce(String(error)));
     return;
   }
   const providerPlayButton = target.closest<HTMLElement>("[data-provider-play]");
