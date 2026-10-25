@@ -17,6 +17,7 @@ use windows::{
             eMultimedia, eRender, EDataFlow, ERole, IMMDeviceEnumerator, IMMNotificationClient,
             IMMNotificationClient_Impl, MMDeviceEnumerator, DEVICE_STATE, DEVICE_STATE_ACTIVE,
         },
+        Foundation::PROPERTYKEY,
         System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
     },
 };
@@ -85,7 +86,7 @@ impl IMMNotificationClient_Impl for CoreAudioNotification {
         Ok(())
     }
 
-    fn OnPropertyValueChanged(&self, _device_id: &PCWSTR, _key: &windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY) -> windows::core::Result<()> { Ok(()) }
+    fn OnPropertyValueChanged(&self, _device_id: &PCWSTR, _key: &PROPERTYKEY) -> windows::core::Result<()> { Ok(()) }
 }
 
 pub fn start(app: AppHandle) {
