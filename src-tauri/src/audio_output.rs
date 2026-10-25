@@ -48,12 +48,15 @@ impl OutputListener {
 #[implement(IMMNotificationClient)]
 struct CoreAudioNotification(OutputListener);
 
-impl IMMNotificationClient_Impl for CoreAudioNotification {
+impl IMMNotificationClient_Impl for CoreAudioNotification_Impl {
     fn OnDeviceStateChanged(&self, device_id: &PCWSTR, new_state: DEVICE_STATE) -> windows::core::Result<()> {
         if device_id.is_null() || new_state == DEVICE_STATE_ACTIVE {
             return Ok(());
         }
-        let changed_id = unsafe { device_id.to_string()? };
+        let changed_id = match unsafe { device_id.to_string() } {
+            Ok(id) => id,
+            Err(_) => return Ok(()),
+        };
         let current_id = self.0.default_render_id.lock().unwrap_or_else(|error| error.into_inner()).clone();
         // Only react to loss of the output Viviette was following. Input-device
         // state changes and unrelated outputs do not affect this playback path.
@@ -69,7 +72,10 @@ impl IMMNotificationClient_Impl for CoreAudioNotification {
         if device_id.is_null() {
             return Ok(());
         }
-        let removed_id = unsafe { device_id.to_string()? };
+        let removed_id = match unsafe { device_id.to_string() } {
+            Ok(id) => id,
+            Err(_) => return Ok(()),
+        };
         let current_id = self.0.default_render_id.lock().unwrap_or_else(|error| error.into_inner()).clone();
         if current_id.as_deref() == Some(removed_id.as_str()) {
             self.0.update_default(None);
@@ -81,7 +87,7 @@ impl IMMNotificationClient_Impl for CoreAudioNotification {
         if flow != eRender || role != eMultimedia {
             return Ok(());
         }
-        let next = if device_id.is_null() { None } else { Some(unsafe { device_id.to_string()? }) };
+        let next = if device_id.is_null() { None } else { unsafe { device_id.to_string().ok() } };
         self.0.update_default(next);
         Ok(())
     }
@@ -106,9 +112,9 @@ fn run(app: AppHandle) -> windows::core::Result<()> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
     let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)? };
     let initial_id = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }
-        .and_then(|device| unsafe { device.GetId() })
-        .and_then(|id| unsafe { id.to_string() })
-        .ok();
+        .ok()
+        .and_then(|device| unsafe { device.GetId().ok() })
+        .and_then(|id| unsafe { id.to_string().ok() });
     let callback = CoreAudioNotification(OutputListener {
         app,
         default_render_id: Arc::new(Mutex::new(initial_id)),
