@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101116" />
+    <title>Viviette</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#home" aria-label="Viviette home">
+          <span class="brand-mark" aria-hidden="true">V</span>
+          <span class="brand-name">Viviette</span>
+        </a>
+
+        <label class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></svg>
+          <input id="searchInput" type="search" autocomplete="off" placeholder="Search your music" aria-label="Search tracks, artists, and albums" />
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <div class="topbar-actions">
+          <span class="source-status" title="No streaming provider is connected">
+            <span class="status-dot"></span>
+            <span>No source connected</span>
+          </span>
+          <button class="icon-button nav-toggle" id="navToggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="navPanel" title="Open navigation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="main-content" id="mainContent" tabindex="-1"></main>
+
+      <div class="drawer-scrim" id="drawerScrim" hidden></div>
+      <aside class="nav-panel" id="navPanel" aria-label="Navigation" aria-hidden="true" inert>
+        <div class="nav-panel-heading">
+          <span>YOUR SPACE</span>
+          <button class="icon-button close-nav" id="closeNav" type="button" aria-label="Close navigation" title="Close navigation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 6-12 12M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <nav class="nav-list" aria-label="Main navigation">
+          <button class="nav-item active" type="button" data-view="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg><span>Home</span></button>
+          <button class="nav-item" type="button" data-view="browse"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5m-12-8 2-5 2 3 3-4"/></svg><span>Browse</span></button>
+          <button class="nav-item" type="button" data-view="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h4v16H4zM11 4h4v16h-4zM18 4h2v16h-2z"/></svg><span>Library</span></button>
+          <button class="nav-item" type="button" data-view="playlists"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 11h11M4 16h7m6-2v8m-4-4h8"/></svg><span>Playlists</span></button>
+          <button class="nav-item" type="button" data-view="liked"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 8.8c0 4.2-8.8 10-8.8 10S3.2 13 3.2 8.8a4.4 4.4 0 0 1 8.8-.2 4.4 4.4 0 0 1 8.8.2Z"/></svg><span>Liked Songs</span><span class="nav-count" id="likedCount">0</span></button>
+        </nav>
+        <div class="nav-rule"></div>
+        <div class="playlist-heading"><span>Playlists</span><button id="navCreatePlaylist" class="icon-button tiny" type="button" aria-label="Create playlist" title="Create playlist"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <div class="nav-playlists" id="navPlaylists"></div>
+        <button class="nav-item settings-link" type="button" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.5.9l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.5-.9l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-1.8l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.5-.9l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.5.9l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 1.7Z"/></svg><span>Settings</span></button>
+      </aside>
+
+      <footer class="player-bar" aria-label="Playback controls">
+        <section class="player-track" aria-label="Selected track">
+          <div class="mini-art art-starlight" id="miniArt" aria-hidden="true"></div>
+          <div class="mini-copy"><span class="mini-title" id="miniTitle">Nothing playing</span><span class="mini-artist" id="miniArtist">Import local music to get started</span></div>
+          <div class="track-actions">
+            <button class="icon-button player-icon" id="likeButton" type="button" aria-label="Like" aria-pressed="false" data-tooltip="Like"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78Z"/></svg></button>
+            <button class="icon-button player-icon" id="downloadButton" type="button" aria-label="Download MP3" data-tooltip="Download MP3"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+            <button class="icon-button player-icon" id="playlistButton" type="button" aria-label="Add to playlist" aria-expanded="false" aria-controls="playlistMenu" data-tooltip="Add to playlist"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h12M19 15v6m-3-3h6"/></svg></button>
+            <button class="icon-button player-icon more-button" id="moreButton" type="button" aria-label="More track actions" aria-expanded="false" aria-controls="trackMenu" data-tooltip="More track actions"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
+          </div>
+        </section>
+
+        <section class="player-center" aria-label="Track transport">
+          <div class="transport-row">
+            <button class="icon-button transport-icon" type="button" data-transport="shuffle" aria-label="Shuffle" data-tooltip="Shuffle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 14 4 4-4 4M18 2l4 4-4 4M2 18h2.5a5 5 0 0 0 3.54-1.46L18 6M2 6h2.5a5 5 0 0 1 3.54 1.46l1.42 1.42M14 14l4 4"/></svg></button>
+            <button class="icon-button transport-icon" type="button" data-transport="previous" aria-label="Previous track" data-tooltip="Previous"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20 9 12l10-8v16ZM5 19V5"/></svg></button>
+            <button class="play-button" type="button" data-transport="play" aria-label="Play" title="Connect a provider to play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg></button>
+            <button class="icon-button transport-icon" type="button" data-transport="next" aria-label="Next track" data-tooltip="Next"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 4 10 8-10 8V4ZM19 5v14"/></svg></button>
+            <button class="icon-button transport-icon" type="button" data-transport="repeat" aria-label="Repeat off" data-tooltip="Repeat off"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/></svg></button>
+          </div>
+          <div class="timeline-row"><span class="time-label" id="elapsedTime">0:00</span><input class="timeline-slider" id="seekSlider" type="range" min="0" max="1000" value="0" aria-label="Seek through track" disabled><span class="time-label" id="totalTime">0:00</span></div>
+        </section>
+
+        <section class="player-extras" aria-label="More playback options">
+          <button class="icon-button player-icon" type="button" data-player-extra="lyrics" aria-label="Lyrics" data-tooltip="Lyrics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h16M4 20h10"/></svg></button>
+          <button class="icon-button player-icon queue-button" type="button" data-player-extra="queue" aria-label="Queue" data-tooltip="Queue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h11m3-3 3 3-3 3"/></svg></button>
+          <button class="icon-button player-icon volume-button" id="volumeToggle" type="button" aria-label="Mute volume" data-tooltip="Mute volume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5Zm4.54 3.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
+          <input class="volume-slider" id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.72" aria-label="Volume">
+        </section>
+      </footer>
+
+      <div class="popover playlist-menu" id="playlistMenu" hidden>
+        <div class="popover-label">ADD TO PLAYLIST</div>
+        <div id="playlistOptions"></div>
+        <button class="create-playlist-option" id="createPlaylistOption" type="button"><span class="plus">+</span><span>Create playlist</span></button>
+      </div>
+
+      <div class="popover track-menu" id="trackMenu" hidden>
+        <div class="popover-label">TRACK ACTIONS</div>
+        <button class="track-menu-option" id="notLikedOption" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/></svg><span>Mark as not liked</span></button>
+      </div>
+
+      <dialog class="create-dialog" id="createDialog" aria-labelledby="dialogTitle">
+        <form id="createPlaylistForm">
+          <div class="dialog-kicker">YOUR LIBRARY</div>
+          <h2 id="dialogTitle">Create a playlist</h2>
+          <label for="playlistName">Name</label>
+          <input id="playlistName" name="playlistName" maxlength="48" placeholder="Give it a name" required />
+          <div class="dialog-actions"><button class="button-quiet" id="cancelCreate" type="button">Cancel</button><button class="button-primary" type="submit">Create</button></div>
+        </form>
+      </dialog>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+      <input id="audioFiles" type="file" accept="audio/*,.flac,.wav,.opus,.aac,.alac,.dsf,.dff,.mp3" multiple hidden>
+      <audio id="audioElement" preload="metadata"></audio>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

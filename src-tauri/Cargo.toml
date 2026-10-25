@@ -1,0 +1,28 @@
+[package]
+name = "viviette"
+version = "0.1.0"
+description = "Lightweight desktop music player"
+authors = ["Viviette"]
+edition = "2021"
+
+[lib]
+name = "viviette_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+discord-rich-presence = "1.1"
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.62"
+features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_UI_Shell_PropertiesSystem",
+]

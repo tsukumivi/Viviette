@@ -1,0 +1,44 @@
+name: Windows desktop release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: pnpm install --frozen-lockfile
+      - name: Build the Windows setup package
+        run: pnpm tauri build --bundles nsis
+      - name: Prepare the stable installer name and checksum
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Tauri did not produce an NSIS setup executable." }
+          Copy-Item -LiteralPath $installer.FullName -Destination "Viviette-Setup.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "Viviette-Setup.exe").Hash.ToLowerInvariant()
+          "$hash  Viviette-Setup.exe" | Set-Content -Encoding ascii "SHA256SUMS.txt"
+      - name: Publish the tagged release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release create $tag "Viviette-Setup.exe" "SHA256SUMS.txt" --title "Viviette $tag" --notes "Windows desktop installer. This setup installs Viviette for the current Windows user and does not require administrator access. Verify the installer with SHA256SUMS.txt."
